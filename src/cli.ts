@@ -29,6 +29,7 @@ Usage:
   macsub current                                 show the active account + live login email
   macsub swap <name>   (alias: use)              swap accounts, then auto-heal tokens if stale
   macsub rm <name>                               remove an account from the vault
+  macsub rename <old> <new>                      rename a vaulted account
   macsub refresh [name]                          refresh tokens (L1) for account (default: active)
   macsub login <name> [--store-password]         force re-login: saved web session, then browser agent
   macsub doctor                                  check config paths, keychain, locks, Chrome debug port
@@ -205,6 +206,15 @@ async function main(): Promise<number> {
       await requireAccount(vault, name);
       await vault.remove(name);
       log.info(`removed "${name}"`);
+      return 0;
+    }
+
+    case "rename": {
+      const [from, to] = rest;
+      if (!from || !to) usage("macsub rename <old> <new>");
+      const { renameAccount } = await import("./vault/rename.js");
+      await renameAccount(vault, from, to);
+      log.info(`renamed ${from} → ${to}`);
       return 0;
     }
 
