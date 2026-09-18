@@ -68,7 +68,7 @@ switching.)
 
 ```
 macsub add <name> [--session-key <sk-ant-…>]   vault the current login
-macsub ls | current | rm <name>
+macsub ls | current | rm <name> | rename <old> <new>
 macsub swap <name>      (alias: use)
 macsub refresh [name]
 macsub login <name> [--store-password]         force the re-login ladder
