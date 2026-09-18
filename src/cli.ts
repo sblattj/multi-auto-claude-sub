@@ -27,7 +27,7 @@ Usage:
   macsub add <name> [--session-key <sk-ant-…>]   vault the CURRENT Claude Code login under <name>
   macsub ls                                      list vaulted accounts with token expiry
   macsub current                                 show the active account + live login email
-  macsub swap <name>   (alias: use)              swap accounts, then auto-heal tokens if stale
+  macsub swap [name]     (alias: use)            switch accounts; with no name and exactly\n                                               two vaulted accounts, toggles to the other one
   macsub rm <name>                               remove an account from the vault
   macsub rename <old> <new>                      rename a vaulted account
   macsub refresh [name]                          refresh tokens (L1) for account (default: active)
@@ -178,11 +178,23 @@ async function main(): Promise<number> {
 
     case "swap":
     case "use": {
-      const name = rest[0];
-      if (!name) usage(`macsub ${cmd} <name>`);
+      let name = rest[0];
+      if (!name) {
+        const { resolveToggle } = await import("./swap/toggle.js");
+        name = (await resolveToggle(vault, active)).to;
+      }
       await requireAccount(vault, name);
       const result = await swap(vault, active, name, { detectSessions: detectLiveSessions });
-      for (const w of result.warnings) log.warn(w);
+      const pidWarnings = result.warnings.filter((w) => w.includes("(pid "));
+      const otherWarnings = result.warnings.filter((w) => !w.includes("(pid "));
+      if (pidWarnings.length === 1) log.warn(pidWarnings[0]!);
+      else if (pidWarnings.length > 1) {
+        const pids = pidWarnings.flatMap((w) => [...w.matchAll(/\(pid (\d+)\)/g)].map((m) => m[1]!));
+        log.warn(
+          `${pidWarnings.length} live Claude Code sessions may hold the outgoing account in memory (pids ${pids.join(", ")}) — they are never killed; restart them to pick up the swap`,
+        );
+      }
+      for (const w of otherWarnings) log.warn(w);
       if (result.outcome === "failed-unknown-account") usage(`unknown account "${name}"`);
       if (result.outcome.startsWith("failed")) {
         log.err(`swap failed: ${result.outcome}${result.detail ? ` — ${result.detail}` : ""}`);
