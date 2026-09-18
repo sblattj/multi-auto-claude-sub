@@ -12,6 +12,7 @@ macsub add personal        # vault the account you're logged into right now
 # …log into your other account with `claude auth login`, then:
 macsub add work
 macsub swap work           # switch Claude Code accounts; auto-heals expired tokens
+macsub swap                # two accounts vaulted? bare swap toggles to the other one
 macsub ls                  # every account with access/refresh expiry at a glance
 ```
 
