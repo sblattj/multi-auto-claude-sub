@@ -90,7 +90,7 @@ Per account, in order, stop at first success:
   (§4 steps 4–5 under locks). On `session_stale_relogin` error: retry once with
   Claude-Code-only scopes; if it still fails set `webSession.stale = true` → L3.
 - **L3 browser agent** (§6): full OAuth with CDP-driven browser.
-- **L4 manual**: notify + print: run `claude login` as that account, then
+- **L4 manual**: notify + print: run `claude auth login` as that account, then
   `macsub add <name>` to re-capture.
 
 ## 6. Browser auto-login agent (L3) — CDP

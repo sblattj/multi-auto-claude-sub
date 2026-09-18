@@ -128,7 +128,7 @@ async function browserLogin(
 
   if (!result.success || !result.callback) {
     notify("automatic login failed — manual fallback:");
-    notify(`  1. run: claude login  (log in as ${rec.oauthAccount.emailAddress})`);
+    notify(`  1. run: claude auth login  (log in as ${rec.oauthAccount.emailAddress})`);
     notify(`  2. run: macsub add ${accountName}   (re-captures the fresh login)`);
     return {
       level: "needs-manual-login",
