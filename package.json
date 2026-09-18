@@ -1,0 +1,32 @@
+{
+  "name": "multi-auto-claude-sub",
+  "version": "0.1.0",
+  "description": "Switch between multiple Claude Code subscription accounts — account switcher CLI with auto-login on swap",
+  "type": "module",
+  "bin": { "macsub": "dist/cli.js" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "account",
+    "switcher",
+    "swap",
+    "multiple-accounts",
+    "subscription",
+    "cli"
+  ],
+  "license": "MIT",
+  "files": ["dist", "README.md", "SPEC.md", "LICENSE"],
+  "repository": "github:sblattj/multi-auto-claude-sub",
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
