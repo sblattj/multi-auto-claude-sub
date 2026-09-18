@@ -1,6 +1,6 @@
 {
   "name": "multi-auto-claude-sub",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Switch between multiple Claude Code subscription accounts — account switcher CLI with auto-login on swap",
   "type": "module",
   "bin": { "macsub": "dist/cli.js" },
@@ -8,7 +8,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "keywords": [
     "claude",
