@@ -130,7 +130,7 @@ async function main(): Promise<number> {
       const name = positionals[0];
       if (!name) usage("macsub add <name>");
       const cred = await active.readCredential();
-      if (cred === null) usage("no Claude Code login found — run `claude login` first, then `macsub add <name>`");
+      if (cred === null) usage("no Claude Code login found — run `claude auth login` first, then `macsub add <name>`");
       const identity = await active.readOauthAccount();
       const rec: AccountRecord = {
         name,
@@ -147,7 +147,7 @@ async function main(): Promise<number> {
       log.info(`vaulted "${name}" (${rec.oauthAccount.emailAddress})`);
       if (!rec.webSession) {
         log.info(`tip: save the claude.ai session cookie to enable headless re-login:\n` +
-          `    macsub rm ${name} && claude login (as this account) … or edit ~/.macsub/accounts/${name}.json —\n` +
+          `    macsub rm ${name} && claude auth login (as this account) … or edit ~/.macsub/accounts/${name}.json —\n` +
           `    see README "Web session capture"`);
       }
       return 0;

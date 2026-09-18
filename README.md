@@ -9,7 +9,7 @@ tab using CDP focus emulation (no window stealing, no manual clicking).
 npm install -g multi-auto-claude-sub
 
 macsub add personal        # vault the account you're logged into right now
-# …log into your other account with `claude login`, then:
+# …log into your other account with `claude auth login`, then:
 macsub add work
 macsub swap work           # switch Claude Code accounts; auto-heals expired tokens
 macsub ls                  # every account with access/refresh expiry at a glance
