@@ -81,6 +81,7 @@ export async function websessionLogin(
   }
 
   const verifier = generateVerifier();
+  const state = randomState();
   const authorize = async (scope: string): Promise<string> => {
     const res = await fetch(`${AUTHORIZE_BASE}/${orgUuid}/authorize`, {
       method: "POST",
@@ -99,7 +100,7 @@ export async function websessionLogin(
         code_challenge: challenge(verifier),
         code_challenge_method: "S256",
         redirect_uri: REDIRECT_URI,
-        state: randomState(),
+        state,
       }),
     });
     const text = await res.text();
@@ -134,7 +135,7 @@ export async function websessionLogin(
   }
 
   const client = new OAuthClient(fetch);
-  const claudeAiOauth = await client.exchangeCode({ code, redirectUri: REDIRECT_URI, codeVerifier: verifier });
+  const claudeAiOauth = await client.exchangeCode({ code, redirectUri: REDIRECT_URI, codeVerifier: verifier, state });
   return { claudeAiOauth };
 }
 
