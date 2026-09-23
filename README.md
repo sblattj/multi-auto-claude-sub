@@ -44,15 +44,23 @@ swap + automatic re-login when tokens die.
   target's credentials + identity, never touches your other settings.
 - **Auto-login ladder**, run on every swap:
   1. valid access token → done
-  2. refresh token alive → refresh (outside locks, CAS re-vault — refresh tokens
-     are one-time-use)
+  2. refresh token alive → refresh (CAS re-vault; refresh tokens are one-time-use).
+     A swap refreshes the target *before* installing it, so running sessions never
+     see an expired token. For the live account the refresh runs under Claude
+     Code's own refresh lock, and a token a running session already refreshed is
+     adopted instead of spent twice
   3. saved claude.ai `sessionKey` cookie → fully headless re-login, no browser
-  4. **browser agent**: opens its own tab on the Anthropic OAuth page, emulates
-     page focus (CDP `Emulation.setFocusEmulationEnabled`) so a **background tab**
-     can click the focus-gated Authorize button, fills your email, optionally your
-     password (only if you stored it in the Keychain), and captures the
-     `localhost` callback — then installs the fresh tokens
-  5. everything failed → prints the two manual commands
+  4. **browser agent**: opens its own tab on the claude.ai OAuth page (the same
+     subscription login `claude auth login` uses), emulates page focus (CDP
+     `Emulation.setFocusEmulationEnabled`) so a **background tab** can click the
+     focus-gated Authorize button, fills your email and submits the email form
+     (never a Google/Apple/SSO button), optionally your password (only if you
+     stored it in the Keychain), and captures the `localhost` callback, then
+     installs the fresh tokens. If the browser is signed into a different
+     claude.ai account, claude.ai emails you a login link: open it and the agent
+     finishes the rest
+  5. everything failed → prints why each step failed (refresh error, the page the
+     agent stalled on) and the two manual commands
 
 ## Is using multiple Claude accounts allowed?
 

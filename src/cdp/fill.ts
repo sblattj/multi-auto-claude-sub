@@ -24,14 +24,15 @@ function isObj(v: unknown): v is Record<string, unknown> {
 /**
  * Focus the element located by `selectorExpr` (a self-contained JS expression
  * evaluating to the element or null — same location rules as the classifier),
- * prove focus landed, insertText `text`, then verify the value contains it and
- * fire input+change. Throws FillError at the first failed gate; never inserts
- * text unless the activeElement gate passed.
+ * select any existing value so the insert replaces it (login pages prefill the
+ * email from login_hint), prove focus landed, insertText `text`, then verify the
+ * value contains it and fire input+change. Throws FillError at the first failed
+ * gate; never inserts text unless the activeElement gate passed.
  */
 export async function focusAndType(conn: CdpSender, selectorExpr: string, text: string): Promise<void> {
   const focus = await evalInPage(
     conn,
-    `(() => { const el = ${selectorExpr}; if (!el) return { ok: false, reason: "element not found" }; el.focus(); return { ok: true }; })()`,
+    `(() => { const el = ${selectorExpr}; if (!el) return { ok: false, reason: "element not found" }; el.focus(); if (typeof el.select === "function") el.select(); return { ok: true }; })()`,
   );
   if (!isObj(focus) || focus.ok !== true) {
     throw new FillError(`focusAndType: field not located/focusable (${selectorExpr.slice(0, 60)}…)`, "locate");

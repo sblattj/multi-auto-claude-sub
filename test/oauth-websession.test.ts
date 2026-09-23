@@ -28,11 +28,11 @@ function authzOk(code: string): { status: number; body: unknown } {
 const TOKEN_OK = {
   status: 200,
   body: {
-    accessToken: "sk-ant-atok-new",
-    refreshToken: "sk-ant-rtok-new",
-    expiresAt: 1_900_000_000_000,
-    refreshTokenExpiresAt: 2_000_000_000_000,
-    scopes: ["user:inference", "user:sessions:claude_code"],
+    access_token: "sk-ant-atok-new",
+    refresh_token: "sk-ant-rtok-new",
+    expires_in: 28_800,
+    refresh_token_expires_in: 1_900_000,
+    scope: "user:inference user:sessions:claude_code",
   },
 };
 
@@ -89,11 +89,13 @@ test("websession: full happy path — URL/headers/body of all three calls", asyn
   const c2 = calls[2]!;
   assert.equal(c2.url, TOKEN_URL);
   assert.equal(c2.init.method, "POST");
-  const form = new URLSearchParams(c2.init.body ?? "");
-  assert.equal(form.get("grant_type"), "authorization_code");
-  assert.equal(form.get("code"), "auth_code_1");
-  assert.equal(form.get("redirect_uri"), REDIRECT_URI);
-  const verifier = form.get("code_verifier") ?? "";
+  assert.equal(c2.init.headers["content-type"], "application/json");
+  const body2 = JSON.parse(c2.init.body ?? "{}") as Record<string, string>;
+  assert.equal(body2.grant_type, "authorization_code");
+  assert.equal(body2.code, "auth_code_1");
+  assert.equal(body2.redirect_uri, REDIRECT_URI);
+  assert.equal(body2.state, body1.state, "exchange echoes the authorize state");
+  const verifier = body2.code_verifier ?? "";
   assert.ok(isVerifierShaped(verifier), `code_verifier not RFC 7636 shaped: ${verifier}`);
   assert.equal(challenge(verifier), ch, "code_challenge must be S256(code_verifier)");
 });
@@ -126,8 +128,8 @@ test("websession: session_stale_relogin retries once with user:inference-only sc
   assert.equal(calls[2]!.url, `https://claude.ai/v1/oauth/${ORG}/authorize`);
   assert.equal(retryBody.scope, "user:inference");
 
-  const form = new URLSearchParams(calls[3]!.init.body ?? "");
-  assert.equal(form.get("code"), "auth_code_2");
+  const exchange = JSON.parse(calls[3]!.init.body ?? "{}") as Record<string, string>;
+  assert.equal(exchange.code, "auth_code_2");
   assert.equal(calls[3]!.url, TOKEN_URL);
 });
 

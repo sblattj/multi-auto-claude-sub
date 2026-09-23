@@ -145,16 +145,22 @@ async function driveLoop(
     const t = lastActed.get(k);
     return t === undefined || Date.now() - t >= ACTION_COOLDOWN_MS;
   };
-  let lastKind = "unknown";
+  let lastState = "unknown";
   let otpNotified = false;
   let pwNotified = false;
 
   for (;;) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      return { success: false, stage: "timeout", detail: `no authorization after ${cfg.timeoutMs}ms (last page state: ${lastKind})` };
+      return { success: false, stage: "timeout", detail: `no authorization after ${cfg.timeoutMs}ms (last page state: ${lastState})` };
     }
-    const cb = await raceCallback(listener.done, Math.min(cfg.pollMs, remaining));
+    let cb: { code: string; state: string } | null;
+    try {
+      cb = await raceCallback(listener.done, Math.min(cfg.pollMs, remaining));
+    } catch (e) {
+      // keep the page state: it is the only clue to where the login stalled
+      return { success: false, stage: "error", detail: `callback listener failed: ${safeDetail(e)} (last page state: ${lastState})` };
+    }
     if (cb) {
       if (cfg.expectedState !== null && cb.state !== cfg.expectedState) {
         return { success: false, stage: "error", detail: "callback state mismatch — login aborted without exchanging code" };
@@ -163,7 +169,7 @@ async function driveLoop(
     }
 
     const cls = parseClassification(await evalInPage(conn, PAGE_CLASSIFIER_EXPR));
-    lastKind = cls.kind;
+    lastState = cls.where ? `${cls.kind} at ${cls.where}` : cls.kind;
     switch (cls.kind) {
       case "authorize-button": {
         // clickFocusGated semantics: keep polling while disabled; trusted-click once enabled.
