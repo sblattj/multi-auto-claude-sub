@@ -14,8 +14,7 @@ import { swap } from "./swap/swap.js";
 import { detectLiveSessions } from "./swap/sessions.js";
 import { assess } from "./oauth/health.js";
 import { OAuthClient } from "./oauth/client.js";
-import { refreshWithCas } from "./oauth/health.js";
-import { ensureHealthy } from "./pipeline.js";
+import { ensureHealthy, refreshAccount } from "./pipeline.js";
 import { discoverBase } from "./cdp/connection.js";
 import { log } from "./util/log.js";
 
@@ -184,6 +183,15 @@ async function main(): Promise<number> {
         name = (await resolveToggle(vault, active)).to;
       }
       await requireAccount(vault, name);
+      // Refresh the target while it is only in the vault: once installed, running
+      // Claude Code sessions see an expired token and race to refresh it.
+      // Best effort: the post-swap ladder retries and reports any failure.
+      try {
+        const pre = await refreshAccount(vault, active, name, new OAuthClient());
+        if (pre.level === "refreshed") log.info(`refreshed ${name} tokens before install`);
+      } catch {
+        /* fall through to the swap */
+      }
       const result = await swap(vault, active, name, { detectSessions: detectLiveSessions });
       const pidWarnings = result.warnings.filter((w) => w.includes("(pid "));
       const otherWarnings = result.warnings.filter((w) => !w.includes("(pid "));
@@ -234,16 +242,11 @@ async function main(): Promise<number> {
       const name = rest[0] ?? (await vault.activeAccount());
       if (!name) usage("no active account — `macsub refresh <name>`");
       await requireAccount(vault, name);
-      const result = await refreshWithCas(vault, name, new OAuthClient());
-      if (result.level === "fresh") log.info("tokens already valid");
+      const result = await refreshAccount(vault, active, name, new OAuthClient());
+      if (result.level === "fresh") log.info(result.detail ?? "tokens already valid");
       else if (result.level === "refreshed") {
         log.info("refreshed");
-        if (result.credential && (await vault.activeAccount()) === name) {
-          const rec = await requireAccount(vault, name);
-          const { installFreshCredential } = await import("./swap/swap.js");
-          await installFreshCredential(active, { ...rec, credential: result.credential });
-          log.info("installed into live state");
-        }
+        if ((await vault.activeAccount()) === name) log.info("installed into live state");
       } else {
         log.err(`refresh failed (${result.level})${result.detail ? `: ${result.detail}` : ""} — try: macsub login ${name}`);
         return 1;

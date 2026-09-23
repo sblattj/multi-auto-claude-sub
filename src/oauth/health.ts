@@ -22,7 +22,7 @@ export function assess(cred: CredentialBlob, now: number = Date.now()): AssessRe
 
 /** Minimal surface refreshWithCas needs; OAuthClient satisfies it structurally. */
 export interface TokenRefresher {
-  refreshTokens(refreshToken: string): Promise<ClaudeAiOauth>;
+  refreshTokens(refreshToken: string, prev?: Partial<ClaudeAiOauth>): Promise<ClaudeAiOauth>;
 }
 
 export async function refreshWithCas(
@@ -45,7 +45,7 @@ export async function refreshWithCas(
   const usedRefreshToken = rec.credential.claudeAiOauth.refreshToken;
   let fresh: CredentialBlob;
   try {
-    const claudeAiOauth = await client.refreshTokens(usedRefreshToken);
+    const claudeAiOauth = await client.refreshTokens(usedRefreshToken, rec.credential.claudeAiOauth);
     fresh = { claudeAiOauth };
   } catch (err) {
     return {

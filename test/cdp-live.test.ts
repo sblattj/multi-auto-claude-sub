@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CdpConnection, discoverBase, evalInPage } from "../src/cdp/connection.js";
-import { EMAIL_FIELD_EXPR, PAGE_CLASSIFIER_EXPR } from "../src/cdp/classify.js";
+import { CONTINUE_BUTTON_EXPR, EMAIL_FIELD_EXPR, PAGE_CLASSIFIER_EXPR } from "../src/cdp/classify.js";
 import { pollForActionable, trustedClick, withFocusEmulation } from "../src/cdp/focus.js";
 import { focusAndType } from "../src/cdp/fill.js";
 
@@ -63,6 +63,56 @@ test(
         return evalInPage(conn, `document.querySelector("input[type=email]").value`);
       });
       assert.equal(result, "macsub-live@example.com");
+    } finally {
+      if (targetId) await conn.closeTab(targetId).catch(() => {});
+      conn.close();
+    }
+  },
+);
+
+/** Same layout as the claude.ai / Console login pages: provider buttons first,
+ *  then a form holding the (login_hint-prefilled) email field, its submit, and SSO. */
+const loginFixture = `<!doctype html><html><body>
+  <button type="button" onclick="window.clicked='google'">Continue with Google</button>
+  <button type="button" onclick="window.clicked='apple'">Continue with Apple</button>
+  <form onsubmit="event.preventDefault(); window.clicked='email:' + this.querySelector('input').value">
+    <input type="email" id="email" value="prefilled@example.com">
+    <button type="submit">Continue with email</button>
+    <button type="button" onclick="window.clicked='sso'">Continue with SSO</button>
+  </form>
+</body></html>`;
+
+test(
+  "live: login page -> email replaces the prefill, Continue clicks the email submit (not Google)",
+  { skip: LIVE ? false : "set MACSUB_CDP_LIVE=1 to run" },
+  async () => {
+    const base = await discoverBase();
+    assert.ok(base, "no Chrome DevTools endpoint discovered");
+    const conn = await CdpConnection.open(base);
+    let targetId = "";
+    try {
+      const tab = await conn.newTab("about:blank");
+      targetId = tab.targetId;
+      await conn.send("Page.navigate", { url: "data:text/html;charset=utf-8," + encodeURIComponent(loginFixture) });
+
+      const clicked = await withFocusEmulation(conn, async () => {
+        const deadline = Date.now() + 5000;
+        let cls: unknown = null;
+        while (Date.now() < deadline) {
+          cls = await evalInPage(conn, PAGE_CLASSIFIER_EXPR);
+          if ((cls as { kind?: string })?.kind === "email-field") break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        assert.equal((cls as { kind?: string })?.kind, "email-field");
+
+        await focusAndType(conn, EMAIL_FIELD_EXPR, "me@example.com");
+        assert.equal(await evalInPage(conn, `document.getElementById("email").value`), "me@example.com");
+
+        const btn = (await evalInPage(conn, CONTINUE_BUTTON_EXPR)) as { x: number; y: number };
+        await trustedClick(conn, btn);
+        return evalInPage(conn, `window.clicked`);
+      });
+      assert.equal(clicked, "email:me@example.com");
     } finally {
       if (targetId) await conn.closeTab(targetId).catch(() => {});
       conn.close();

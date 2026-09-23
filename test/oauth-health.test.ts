@@ -49,12 +49,14 @@ class FakeVault implements Vault {
 
 class FakeRefresher implements TokenRefresher {
   calls: string[] = [];
+  prevs: (Partial<ClaudeAiOauth> | undefined)[] = [];
   #result: ClaudeAiOauth | Error;
   constructor(result: ClaudeAiOauth | Error) {
     this.#result = result;
   }
-  async refreshTokens(refreshToken: string): Promise<ClaudeAiOauth> {
+  async refreshTokens(refreshToken: string, prev?: Partial<ClaudeAiOauth>): Promise<ClaudeAiOauth> {
     this.calls.push(refreshToken);
+    this.prevs.push(prev);
     if (this.#result instanceof Error) throw this.#result;
     return this.#result;
   }
@@ -102,6 +104,8 @@ test("health: refreshWithCas happy path saves with lastRefreshedAt", async () =>
   assert.equal(result.level, "refreshed");
   assert.equal(result.credential?.claudeAiOauth.accessToken, "sk-ant-atok-new");
   assert.deepEqual(client.calls, ["sk-ant-rtok-old"]);
+  // the credential being refreshed is passed along (scopes to request, fields to keep)
+  assert.deepEqual(client.prevs[0]?.scopes, ["user:inference"]);
 
   assert.equal(vault.saveCalls.length, 1);
   const saved = vault.saveCalls[0]!;

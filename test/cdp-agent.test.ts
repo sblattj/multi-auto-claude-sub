@@ -195,3 +195,36 @@ test("runLoginAgent: result details never leak the authorization code", async ()
   assert.equal(res.success, true);
   assert.equal(res.detail, undefined);
 });
+
+test("runLoginAgent: listener rejects mid-flow -> error detail keeps the last page state", async () => {
+  let reject!: (e: Error) => void;
+  const done = new Promise<{ code: string; state: string }>((_, rej) => {
+    reject = rej;
+  });
+  done.catch(() => {});
+  const conn = new ScriptedAgentConn({
+    script: [{ kind: "unknown", where: "accounts.google.com/v3/signin/identifier" }],
+    repeatLast: true,
+  });
+  setTimeout(() => reject(new Error("callback: no code captured within 50ms")), 30);
+  const res = await runLoginAgent(AUTH_URL, opts({ timeoutMs: 2000, pollMs: 5 }), {
+    conn,
+    startCallbackListener: () => ({ done, close: () => {} }),
+  });
+  assert.equal(res.success, false);
+  assert.equal(res.stage, "error");
+  assert.match(res.detail ?? "", /no code captured/);
+  assert.match(res.detail ?? "", /last page state: unknown at accounts\.google\.com\/v3\/signin\/identifier/);
+  assert.deepEqual(conn.closedTabs, ["T1"]);
+});
+
+test("runLoginAgent: timeout detail names the page it stalled on", async () => {
+  const { handle } = deferredCallback();
+  const conn = new ScriptedAgentConn({ script: [{ kind: "otp-wait", where: "claude.ai/magic-link" }], repeatLast: true });
+  const res = await runLoginAgent(AUTH_URL, opts({ timeoutMs: 60, pollMs: 5 }), {
+    conn,
+    startCallbackListener: () => handle,
+  });
+  assert.equal(res.stage, "timeout");
+  assert.match(res.detail ?? "", /last page state: otp-wait at claude\.ai\/magic-link/);
+});

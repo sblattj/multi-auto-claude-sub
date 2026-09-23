@@ -70,17 +70,29 @@ stale window.
 6. Update `config.json` → `activeAccount = <name>`; release locks.
 7. Post-swap (outside locks): run the health ladder (§5) on the installed account.
 
+Before step 1, L1-refresh the target while it is still vault-only (§5): nobody
+else holds its token then, and running sessions never see an expired credential
+to race on.
+
 ## 5. Token health ladder
 
 Per account, in order, stop at first success:
 
 - **L0 fresh**: `accessToken.expiresAt > now + 60_000` → done.
 - **L1 refresh**: `refreshTokenExpiresAt > now` →
-  `POST https://platform.claude.com/v1/oauth/token`
-  `{"grant_type":"refresh_token","refresh_token":…,"client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e"}`.
-  Refresh tokens are **one-time-use**: do the POST **outside all locks**, then
-  CAS-commit into the vault only if the vaulted `refreshToken` fingerprint is
-  unchanged since the read (another process may have rotated it). Re-vault after.
+  `POST https://platform.claude.com/v1/oauth/token` with a JSON body, as Claude Code sends it:
+  `{"grant_type":"refresh_token","refresh_token":…,"client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","scope":"<the credential's scopes>"}`.
+  The response is OAuth snake_case (`access_token`, `refresh_token`,
+  `expires_in` seconds, `refresh_token_expires_in` seconds, `scope`); convert to
+  the stored camelCase epoch-ms shape. A missing `refresh_token` means no
+  rotation: keep the old one. Refresh tokens are **one-time-use**, so CAS-commit
+  into the vault only if the vaulted `refreshToken` is unchanged since the read.
+  - **Vault-only account**: POST outside all locks (nobody else holds the token).
+  - **Live account**: Claude Code sessions refresh the same token under §3 locks
+    1+2, so hold them for the whole read → POST → install. Inside the locks, first
+    adopt the live credential into the vault when it belongs to this account
+    (`oauthAccount.emailAddress` matches) and is newer (a session already
+    refreshed); only refresh if still needed.
 - **L2 web session** (headless, no browser): if `webSession.sessionKey` exists and
   not `stale`: `GET https://claude.ai/api/account` with cookie
   `sessionKey=<v>` → `memberships[0].organization.uuid` and confirm email;
@@ -99,9 +111,14 @@ Attach-only (never launches Chrome). Base URL: `$CDP_BASE` if set, else probe
 `http://127.0.0.1:{9222,9223,9333,9224}` via `GET /json/version` — never assume
 9222 silently; report which port. All Chrome-only.
 
-1. Bind localhost callback listener on `127.0.0.1:<ephemeral>` FIRST; authorize URL:
-   `https://platform.claude.com/oauth/authorize?response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A<port>%2Fcallback&scope=user%3Ainference%20user%3Asessions%3Aclaude_code&code_challenge=<S256(verifier)>&code_challenge_method=S256&state=<random>`
-   (client_id `9d1c250a-e61b-44d9-88ed-5944d1962f5e`).
+1. Bind localhost callback listener on `127.0.0.1:<ephemeral>` FIRST; authorize URL
+   is Claude Code's claude.ai (subscription) login, `CLAUDE_AI_AUTHORIZE_URL`:
+   `https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A<port>%2Fcallback&scope=<login scopes>&code_challenge=<S256(verifier)>&code_challenge_method=S256&state=<random>&login_hint=<email>`
+   with login scopes `org:create_api_key user:profile user:inference
+   user:sessions:claude_code user:mcp_servers user:file_upload user:plugins`.
+   NOT `platform.claude.com/oauth/authorize`: that is the Console (API billing)
+   login. The listener has no timeout of its own; the agent owns the deadline so
+   its "last page state" detail is what gets reported.
 2. Open OWN tab: `GET <base>/json/new?url=<authorize-url>` — never drive a tab we
    didn't create; close it via `/json/close/<targetId>` in a `finally`.
 3. One WebSocket to the target's `webSocketDebuggerUrl`. Command protocol: JSON
@@ -117,16 +134,21 @@ Attach-only (never launches Chrome). Base URL: `$CDP_BASE` if set, else probe
    - `button` with visible text `Authorize` → trusted click:
      `Input.dispatchMouseEvent` `mouseMoved` → `mousePressed` → `mouseReleased`
      at the button's bounding-rect center (skip if `disabled || aria-disabled`).
-   - `input[type=email]` → focus it (`el.focus()`), verify
-     `document.activeElement === el`, `Input.insertText` the email, then click
-     Continue the same trusted-click way.
+   - `input[type=email]` → focus it (`el.focus()`, `el.select()` so a
+     `login_hint` prefill is replaced), verify `document.activeElement === el`,
+     `Input.insertText` the email, then trusted-click the submit button of the
+     field's own form. Login pages list "Continue with Google" before "Continue
+     with email", so never click by first `/continue/` text match; skip
+     Google/Apple/SSO/etc. buttons in any text fallback.
+   - Every classification carries `where` (host + path, never the query) so a
+     timeout names the page the agent stalled on.
    - password field → fill ONLY if `options.password` provided; otherwise notify
      user + keep polling (they may type it themselves).
    - "check your email" / OTP state → notify, poll until timeout.
 6. Callback handler: on `GET /callback?code=&state=` verify `state`, respond 200
    with a tiny "macsub: login captured — you can close this tab" page, close tab,
    disable emulation. Exchange code (§5 L1 endpoint,
-   `grant_type:"authorization_code"`, `code_verifier`), then install under locks.
+   JSON `grant_type:"authorization_code"`, `code_verifier`, `state`), then install under locks.
 
 Fill safety (burned recipes from cdp-toolkit): `Input.insertText` delivers to
 whatever is focused — prove focus landed before inserting; verify field value

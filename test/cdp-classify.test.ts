@@ -79,3 +79,138 @@ test("classifier expression sanity (structure only — live eval is the optional
   assert.match(PASSWORD_FIELD_EXPR, /input\[type=['"]?password['"]?\]/);
   assert.match(CONTINUE_BUTTON_EXPR, /continue|next|log/);
 });
+
+// ---- behavior against a minimal fake DOM (layout mirrors the real login pages) ----
+
+interface FakeEl {
+  tag: string;
+  typeAttr?: string;
+  role?: string;
+  text?: string;
+  value?: string;
+  form?: FakeForm | null;
+  disabled?: boolean;
+  visible?: boolean;
+  y: number;
+  readonly type: string;
+  getBoundingClientRect(): { left: number; top: number; width: number; height: number };
+  getAttribute(name: string): string | null;
+  textContent: string;
+}
+
+interface FakeForm {
+  els: FakeEl[];
+  querySelectorAll(sel: string): FakeEl[];
+}
+
+function matches(el: FakeEl, selector: string): boolean {
+  return selector.split(",").some((one) => {
+    const m = /^([a-z]*)(?:\[([a-z]+)(?:=['"]?([a-z]+)['"]?)?\])?$/.exec(one.trim());
+    if (!m) throw new Error(`fake DOM cannot parse selector ${one}`);
+    const [, tag, attr, val] = m;
+    if (tag && el.tag !== tag) return false;
+    if (attr) {
+      const v = attr === "type" ? el.typeAttr : attr === "role" ? el.role : undefined;
+      if (val !== undefined ? v !== val : v === undefined) return false;
+    }
+    return true;
+  });
+}
+
+function el(tag: string, props: Partial<FakeEl> & { y: number }): FakeEl {
+  const e = {
+    form: null,
+    visible: true,
+    ...props,
+    tag,
+    get type(): string {
+      return this.typeAttr ?? (tag === "button" ? "submit" : "text");
+    },
+    get textContent(): string {
+      return this.text ?? "";
+    },
+    getBoundingClientRect() {
+      return this.visible ? { left: 0, top: this.y, width: 100, height: 20 } : { left: 0, top: 0, width: 0, height: 0 };
+    },
+    getAttribute(_name: string): string | null {
+      return null;
+    },
+  } as FakeEl;
+  return e;
+}
+
+function page(els: FakeEl[], where = { host: "claude.ai", pathname: "/login" }, bodyText = "") {
+  const document = {
+    body: { innerText: bodyText },
+    querySelectorAll: (sel: string) => els.filter((e) => matches(e, sel)),
+  };
+  return {
+    run: (expr: string): unknown => new Function("document", "location", `return ${expr}`)(document, where),
+  };
+}
+
+function form(): FakeForm {
+  const f: FakeForm = { els: [], querySelectorAll: (sel) => f.els.filter((e) => matches(e, sel)) };
+  return f;
+}
+
+/** claude.ai / Console login: provider buttons first, then the email form. */
+function loginPage(): { els: FakeEl[] } {
+  const f = form();
+  const email = el("input", { typeAttr: "email", value: "me@example.com", form: f, y: 300 });
+  const submit = el("button", { typeAttr: "submit", text: "Continue with email", form: f, y: 340 });
+  const sso = el("button", { typeAttr: "button", text: "Continue with SSO", form: f, y: 380 });
+  f.els.push(email, submit, sso);
+  return {
+    els: [
+      el("button", { typeAttr: "button", text: "Continue with Google", y: 100 }),
+      el("button", { typeAttr: "button", text: "Continue with Apple", y: 140 }),
+      email,
+      submit,
+      sso,
+    ],
+  };
+}
+
+test("CONTINUE_BUTTON_EXPR: login page -> the email form's submit, never Continue with Google", () => {
+  const hit = page(loginPage().els).run(CONTINUE_BUTTON_EXPR) as { y: number; disabled: boolean };
+  assert.equal(hit.y, 350, "center of 'Continue with email' (top 340 + 10)");
+  assert.equal(hit.disabled, false);
+});
+
+test("CONTINUE_BUTTON_EXPR: no form -> first text match that is not a third-party provider", () => {
+  const els = [
+    el("input", { typeAttr: "email", y: 10 }),
+    el("button", { text: "Continue with Google", y: 100 }),
+    el("button", { text: "Log in with SSO", y: 140 }),
+    el("button", { text: "Continue", y: 180 }),
+  ];
+  const hit = page(els).run(CONTINUE_BUTTON_EXPR) as { y: number };
+  assert.equal(hit.y, 190);
+});
+
+test("CONTINUE_BUTTON_EXPR: only provider buttons -> null (nothing safe to click)", () => {
+  const els = [
+    el("input", { typeAttr: "email", y: 10 }),
+    el("button", { text: "Continue with Google", y: 100 }),
+    el("button", { text: "Continue with Apple", y: 140 }),
+  ];
+  assert.equal(page(els).run(CONTINUE_BUTTON_EXPR), null);
+});
+
+test("PAGE_CLASSIFIER_EXPR: reports where it is (host + path, no query)", () => {
+  const cls = parseClassification(page(loginPage().els).run(PAGE_CLASSIFIER_EXPR));
+  assert.equal(cls.kind, "email-field");
+  assert.equal(cls.where, "claude.ai/login");
+
+  const google = parseClassification(
+    page([], { host: "accounts.google.com", pathname: "/v3/signin/identifier" }).run(PAGE_CLASSIFIER_EXPR),
+  );
+  assert.deepEqual(google, { kind: "unknown", where: "accounts.google.com/v3/signin/identifier" });
+});
+
+test("parseClassification: where must be a non-empty string, capped at 120 chars", () => {
+  assert.equal(parseClassification({ kind: "unknown", where: 5 }).where, undefined);
+  assert.equal(parseClassification({ kind: "unknown", where: "" }).where, undefined);
+  assert.equal(parseClassification({ kind: "unknown", where: "x".repeat(500) }).where?.length, 120);
+});

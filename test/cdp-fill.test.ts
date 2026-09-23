@@ -76,3 +76,9 @@ test("focusAndType: insertText transport failure propagates", async () => {
   });
   await assert.rejects(focusAndType(conn, EMAIL_FIELD_EXPR, "a@b.c"), /insert boom/);
 });
+
+test("focusAndType: selects any prefilled value first so the insert replaces it", async () => {
+  const conn = new ScriptedConn({ script: [{ ok: true }, { focused: true }, { ok: true }] });
+  await focusAndType(conn, EMAIL_FIELD_EXPR, "me@example.com");
+  assert.match(conn.evals[0] ?? "", /el\.focus\(\);.*el\.select\(\)/);
+});
