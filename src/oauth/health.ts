@@ -1,5 +1,6 @@
 import type { AccountRecord, ClaudeAiOauth, CredentialBlob, HealthResult, Vault } from "../types.js";
 import { redact } from "../util/log.js";
+import { describeError } from "../util/net.js";
 
 export type AssessLevel = "fresh" | "refreshable" | "dead";
 
@@ -50,7 +51,7 @@ export async function refreshWithCas(
   } catch (err) {
     return {
       level: hasWebSession ? "needs-web-session" : "needs-browser-login",
-      detail: redact(describe(err)),
+      detail: redact(describeError(err)),
     };
   }
 
@@ -65,9 +66,4 @@ export async function refreshWithCas(
     credential: fresh,
     detail: "cas-conflict: vaulted refreshToken changed during refresh; vault left untouched",
   };
-}
-
-function describe(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
 }

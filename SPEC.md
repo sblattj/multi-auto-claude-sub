@@ -28,8 +28,9 @@ Claude Code's own state, which we snapshot/restore:
 
 ```
 $MACSUB_HOME (default ~/.macsub)/
-  config.json                 {"activeAccount": "work" | null}
+  config.json                 {"activeAccount": "work" | null, "swapMode"?: "toggle" | "best"}; writes merge keys
   accounts/<slug>.json        AccountRecord (see src/types.ts), mode 0600
+  usage.json                  last usage snapshot per account (no secrets), mode 0600
 ```
 
 Opt-in login password (macOS) stored as Keychain generic password, service
@@ -158,16 +159,24 @@ after; React inputs may need a `change` event dispatched via evaluate.
 
 ```
 macsub add <name> [--capture-web]   # vault current login (re-vault if name exists); --capture-web pulls claude.ai sessionKey via CDP if a debug port is live
-macsub ls                           # table: name, email, access-exp, refresh-exp, web-session
+macsub ls                           # table: name, email, access-exp, refresh-exp, web-session, 5h %, weekly % (live if the access token is valid, else cached; never refreshes)
+macsub usage [--json]               # §11: live usage per account (refreshes expired tokens, L1 only) + best pick
 macsub current                      # active account + live oauthAccount email
-macsub swap <name>                  # alias: use — §4 + §5
+macsub swap [name] [--best|--toggle]  # alias: use. No name: swapMode (default toggle). --best / `macsub best`: §11 pick, then §4 + §5
+macsub mode [toggle|best]           # show/set config.json swapMode
 macsub rm <name>
 macsub refresh [name]               # L1 only
 macsub login <name> [--store-password]  # force L2/L3; --store-password saves keychain password for future auto-fills (prompt, never echo)
-macsub doctor                       # config paths, keychain access, locks present, Chrome debug port, per-account token expiries
+macsub doctor                       # config paths, keychain access, locks present, TLS trust + endpoint reachability, Chrome debug port, per-account token expiries
 ```
 
 Exit codes: 0 ok, 1 failure, 2 warnings-only.
+
+Network: at startup the CLI adds the OS certificate store to Node's default CA
+list (`tls.setDefaultCACertificates`, Node ≥22.19/≥24.5) so TLS-inspecting proxies
+work; `MACSUB_SYSTEM_CA=0` opts out. Network errors keep undici's cause code
+(`fetch failed: UNABLE_TO_GET_ISSUER_CERT_LOCALLY (…)`) instead of a bare
+`fetch failed`.
 
 ## 8. Security
 
@@ -199,3 +208,23 @@ duplicates), North-web-dev/claude-cookie-session (headless sessionKey→PKCE flo
 authorize/token endpoints, callback port range, lock file names), and
 sblattj/cdp-toolkit `src/tools/focus-emulation.ts` (CDP focus emulation + trusted
 click). Novelty check: no existing tool combines vault swap + auto re-login.
+
+## 11. Usage and the best account
+
+Source: `GET https://api.anthropic.com/api/oauth/usage` with `Authorization: Bearer
+<access token>` and `anthropic-beta: oauth-2025-04-20`, the endpoint Claude Code's
+`/usage` reads. Used fields: `five_hour` / `seven_day` `{utilization 0-100,
+resets_at ISO | null}` (fallback: `limits[]` kinds `session` / `weekly_all`),
+`limits[]` kind `weekly_scoped` (`scope.model.display_name`), `spend` /
+`extra_usage`. Token per account: the live login for the active account when its
+email matches and it is fresh (running sessions rotate it), else the vault copy,
+else (only when refreshing is allowed) `refreshAccount` (L1, never a browser).
+Failed live reads fall back to `usage.json`, marked cached.
+
+Ranking (`src/usage/rank.ts`): windows whose reset passed count as empty. Tier
+`blocked` if the weekly or 5h window is at ≥100% (sorted by when it frees up);
+`unknown` without data; `low` under 5% weekly left; else `ready`. Score = weekly %
+left ÷ hours to the weekly reset (168 when the week has not started, minimum 1
+hour), times min(1, 5h % left ÷ 25) unless the 5h window resets within 30 min.
+Order: ready, low, unknown, blocked; score descending. The current account is
+kept when it shares the top tier and its score × 1.15 ≥ the top score.
