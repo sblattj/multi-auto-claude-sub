@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createVault } from "../src/vault/store.js";
+import { createVault, readVaultConfig, updateVaultConfig } from "../src/vault/store.js";
 import type { AccountRecord } from "../src/types.js";
 
 let seq = 0;
@@ -82,6 +82,19 @@ test("vault: activeAccount / setActive with config.json contents", async (t) => 
   assert.deepEqual(raw, { activeAccount: "work" });
   await vault.setActive(null);
   assert.equal(await vault.activeAccount(), null);
+});
+
+test("vault config: setActive keeps swapMode and other keys", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "macsub-vault-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const vault = createVault({ home });
+  assert.deepEqual(await readVaultConfig(home), {});
+  await updateVaultConfig({ swapMode: "best" }, home);
+  await vault.setActive("work");
+  assert.deepEqual(await readVaultConfig(home), { swapMode: "best", activeAccount: "work" });
+  await updateVaultConfig({ swapMode: "toggle" }, home);
+  assert.equal(await vault.activeAccount(), "work");
+  assert.equal((await readVaultConfig(home)).swapMode, "toggle");
 });
 
 test("vault: save overwrites existing record (re-vault updates)", async (t) => {
