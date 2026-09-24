@@ -83,6 +83,9 @@ macsub ls | current | rm <name> | rename <old> <new>
 macsub usage [--json]                          5h + weekly usage per account, and the best pick
 macsub swap [name] [--best | --toggle]         (alias: use; `macsub best` = swap --best)
 macsub mode [toggle|best]                      what a bare `macsub swap` does (default toggle)
+macsub best --auto [--max-age 5m] [--timeout 4s]  unattended best swap (for a `claude` launcher)
+macsub on-limit                                Claude Code StopFailure hook: swap to the best account, notify
+macsub statusline                              status-line segment: every account's 5h/7d from the cache
 macsub refresh [name]
 macsub login <name> [--store-password]         force the re-login ladder
 macsub doctor                                  paths, keychain, locks, Chrome port
@@ -110,6 +113,67 @@ within 30 minutes, an account with under 5% of its week left only wins when
 nothing else is usable, and near ties keep the current account so you don't
 restart sessions for nothing. `macsub best` swaps to the pick; `macsub mode best`
 makes a bare `macsub swap` do the same.
+
+## Staying on the best account automatically
+
+A swap changes the login for sessions started afterwards; sessions already
+running keep the account they started with. So the useful moments to re-pick are
+right before a new session starts and right after a session hits a limit.
+
+**Before each new session.** `macsub best --auto` is built for a launcher: it
+never opens a browser or prompts, keeps the current account without a request
+when the cached usage (at most `--max-age` old, default 5m) still ranks it best,
+gives up after `--timeout` (default 4s) instead of delaying the launch, and
+always exits 0. It prints one line only when it swaps. A zsh/bash wrapper:
+
+```sh
+# >>> macsub auto-best >>>
+claude() {
+  case "${1-}" in
+    agents|attach|auth|auto-mode|doctor|gateway|import|install|logs|mcp|plugin|plugins|project|rm|\
+    setup-token|stop|kill|ultrareview|update|upgrade|-v|--version|-h|--help) ;;
+    *) if [ "${MACSUB_AUTO:-1}" != 0 ] && command -v macsub >/dev/null 2>&1; then macsub best --auto; fi ;;
+  esac
+  command claude "$@"
+}
+# <<< macsub auto-best <<<
+```
+
+`MACSUB_AUTO=0 claude` skips it once.
+
+**When a session hits a limit.** Claude Code runs `StopFailure` hooks when a turn
+ends on an API error; `macsub on-limit` reads the hook payload, acts only on
+`rate_limit`, swaps to the best account and posts a desktop notification (macOS)
+saying where it went and to resume with `claude --continue`. In
+`~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "StopFailure": [
+      { "matcher": "rate_limit", "hooks": [{ "type": "command", "command": "macsub on-limit", "timeout": 30 }] }
+    ]
+  }
+}
+```
+
+Hooks run without your shell's PATH setup, so use an absolute path to `macsub`
+(or a small script that sets PATH) if it lives under a Node version manager.
+Several sessions limited at once make one swap: the rest see the lock and stay
+quiet.
+
+**Status line.** `macsub statusline` prints `5h/7d alpha* 2/0% · beta 11/32%`
+(`*` = active, colored by the higher of the two, `→ beta` when another account is
+the better pick). It reads only the cache, so it is fast and offline; when the
+cache is older than 10 minutes it starts one detached `macsub usage
+--refresh-cache` (at most once per 10 minutes across all sessions). Add its
+output to your status line script, or use it as the whole status line:
+
+```json
+{ "statusLine": { "type": "command", "command": "macsub statusline" } }
+```
+
+Every automatic decision is logged to `~/.macsub/auto.log`.
 
 ## Corporate proxies (Zscaler, Netskope)
 

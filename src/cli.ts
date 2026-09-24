@@ -6,6 +6,7 @@ import { Writable } from "node:stream";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { AccountRecord, ActiveState, Vault } from "./types.js";
 import { pathsFor } from "./paths.js";
 import { createVault, readVaultConfig, updateVaultConfig, type SwapMode } from "./vault/store.js";
@@ -20,9 +21,12 @@ import { log } from "./util/log.js";
 import { describeError, systemCaStatus, trustSystemCAs, TLS_TRUST_HINT } from "./util/net.js";
 import { TOKEN_URL } from "./oauth/client.js";
 import { USAGE_URL } from "./usage/usage.js";
-import { collectUsage, type AccountUsage } from "./usage/collect.js";
+import { collectUsage, readUsageCache, type AccountUsage } from "./usage/collect.js";
 import { pickBest, rankAccounts, type Ranked } from "./usage/rank.js";
 import { explainPick, fmtAge, fmtDetails, fmtReset, fmtWindow } from "./usage/format.js";
+import { autoBest, DEFAULT_AUTO_TIMEOUT_MS, type AutoResult } from "./auto.js";
+import { needsRefresh, renderStatusline, spawnBackgroundRefresh } from "./usage/statusline.js";
+import { parseDuration } from "./util/duration.js";
 
 const execFileP = promisify(execFile);
 
@@ -39,6 +43,12 @@ Usage:
   macsub swap --toggle                           with exactly two accounts, switch to the other one
   macsub mode [toggle|best]                      show or set what a bare \`macsub swap\` does
                                                  (default toggle)
+  macsub best --auto [--max-age 5m] [--timeout 4s]
+                                                 unattended best swap for a \`claude\` launcher:
+                                                 silent unless it swaps, never opens a browser
+  macsub on-limit                                Claude Code StopFailure hook (rate_limit):
+                                                 swap to the best account and notify
+  macsub statusline                              status-line segment from cached usage (no network)
   macsub rm <name>                               remove an account from the vault
   macsub rename <old> <new>                      rename a vaulted account
   macsub refresh [name]                          refresh tokens (L1) for account (default: active)
@@ -191,6 +201,60 @@ async function printSwapUsage(vault: Vault, active: ActiveState, name: string, p
   }
 }
 
+/** Hook payload on stdin (Claude Code pipes JSON); undefined for a TTY, bad JSON or a slow pipe. */
+async function readStdinJson(timeoutMs: number): Promise<Record<string, unknown> | undefined> {
+  if (process.stdin.isTTY) return undefined;
+  const chunks: Buffer[] = [];
+  const read = new Promise<void>((resolve) => {
+    process.stdin.on("data", (c: Buffer) => chunks.push(c));
+    process.stdin.on("end", () => resolve());
+    process.stdin.on("error", () => resolve());
+  });
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([read, new Promise<void>((r) => (timer = setTimeout(r, timeoutMs)))]);
+  clearTimeout(timer);
+  process.stdin.pause();
+  try {
+    const v: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function limitNotice(r: AutoResult): [string, string] {
+  switch (r.action) {
+    case "swapped":
+      return [`macsub: switched to ${r.to}`, `Rate limit hit on ${r.from ?? "the old account"}. ${r.to}: ${r.reason}. Resume with: claude --continue`];
+    case "kept":
+      return [`macsub: staying on ${r.from}`, `Rate limit hit, but ${r.reason}.`];
+    default:
+      return ["macsub: no switch", `Rate limit hit; ${r.reason}.`];
+  }
+}
+
+/** macOS notification (text passed as argv, never interpolated into AppleScript); stderr elsewhere. */
+async function notify(title: string, body: string): Promise<void> {
+  if (process.platform === "darwin") {
+    try {
+      await execFileP("osascript", [
+        "-e",
+        "on run argv",
+        "-e",
+        "display notification (item 2 of argv) with title (item 1 of argv)",
+        "-e",
+        "end run",
+        title,
+        body,
+      ]);
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+  process.stderr.write(`${title}: ${body}\n`);
+}
+
 async function readStoredPassword(name: string): Promise<string | undefined> {
   if (process.platform !== "darwin") return undefined;
   try {
@@ -232,8 +296,9 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  // before any request: TLS-inspecting proxies need the OS certificate store
-  trustSystemCAs();
+  // before any request: TLS-inspecting proxies need the OS certificate store.
+  // The status line never makes one, and it renders often.
+  if (cmd !== "statusline") trustSystemCAs();
   const vault: Vault = createVault();
   const active: ActiveState = createActiveState();
 
@@ -291,7 +356,15 @@ async function main(): Promise<number> {
     }
 
     case "usage": {
-      const { values } = parseArgs({ args: rest, options: { json: { type: "boolean" } } });
+      const { values } = parseArgs({
+        args: rest,
+        options: { json: { type: "boolean" }, "refresh-cache": { type: "boolean" } },
+      });
+      if (values["refresh-cache"]) {
+        // the status line's detached refresher: no token refreshes, no output
+        await collectUsage(vault, active, { refresh: false }).catch(() => []);
+        return 0;
+      }
       const usages = await collectUsage(vault, active, { refresh: true });
       const now = Date.now();
       const activeName = await vault.activeAccount();
@@ -313,6 +386,31 @@ async function main(): Promise<number> {
       for (const l of rest2) log.info(l);
       if (best && best.name !== activeName) log.info("switch with: macsub swap --best");
       return degraded ? 2 : 0;
+    }
+
+    case "on-limit": {
+      const payload = await readStdinJson(1_000);
+      const error = typeof payload?.error === "string" ? payload.error : undefined;
+      if (error !== undefined && error !== "rate_limit") return 0;
+      const r = await autoBest(vault, active, { trigger: "limit", timeoutMs: 8_000 });
+      if (!r.busy) await notify(...limitNotice(r));
+      return 0;
+    }
+
+    case "statusline": {
+      try {
+        const p = pathsFor();
+        const [recs, activeName, cache] = await Promise.all([vault.list(), vault.activeAccount(), readUsageCache(p.usageCacheFile)]);
+        const names = recs.map((r) => r.name);
+        const now = Date.now();
+        process.stdout.write(renderStatusline({ names, activeName, cache, now, color: !process.env.NO_COLOR }));
+        if (names.length > 0 && needsRefresh(names, cache, now)) {
+          await spawnBackgroundRefresh(join(p.macsubHome, ".usage-refresh"), now);
+        }
+      } catch {
+        /* a status line prints nothing rather than an error */
+      }
+      return 0;
     }
 
     case "mode": {
@@ -345,13 +443,30 @@ async function main(): Promise<number> {
     case "best": {
       const { values, positionals } = parseArgs({
         args: rest,
-        options: { best: { type: "boolean" }, toggle: { type: "boolean" } },
+        options: {
+          best: { type: "boolean" },
+          toggle: { type: "boolean" },
+          auto: { type: "boolean" },
+          "max-age": { type: "string" },
+          timeout: { type: "string" },
+        },
         allowPositionals: true,
       });
       let name = positionals[0];
-      let wantBest = cmd === "best" || values.best === true;
-      if (wantBest && values.toggle) usage("--best and --toggle don't mix");
+      let wantBest = cmd === "best" || values.best === true || values.auto === true;
+      if (wantBest && values.toggle) usage("--best/--auto and --toggle don't mix");
       if (name && (wantBest || values.toggle)) usage("name an account or pass --best/--toggle, not both");
+      if (values.auto) {
+        const r = await autoBest(vault, active, {
+          trigger: "auto",
+          maxAgeMs: parseDuration(values["max-age"] ?? "5m"),
+          timeoutMs: values.timeout !== undefined ? parseDuration(values.timeout) : DEFAULT_AUTO_TIMEOUT_MS,
+        });
+        if (r.action === "swapped") {
+          process.stderr.write(`macsub: switched ${r.from ?? "(none)"} → ${r.to}: ${r.reason}. Sessions already running keep their account.\n`);
+        }
+        return 0; // a launcher must never fail because of this
+      }
       if (!name && !wantBest && !values.toggle) wantBest = (await readVaultConfig()).swapMode === "best";
       let pick: BestPick | undefined;
       if (wantBest) {
