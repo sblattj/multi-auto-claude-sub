@@ -1,6 +1,6 @@
 {
   "name": "multi-auto-claude-sub",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Switch between multiple Claude Code subscription accounts — account switcher CLI with auto-login on swap",
   "type": "module",
   "bin": { "macsub": "dist/cli.js" },
