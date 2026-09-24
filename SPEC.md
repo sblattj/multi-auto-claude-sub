@@ -164,6 +164,10 @@ macsub usage [--json]               # §11: live usage per account (refreshes ex
 macsub current                      # active account + live oauthAccount email
 macsub swap [name] [--best|--toggle]  # alias: use. No name: swapMode (default toggle). --best / `macsub best`: §11 pick, then §4 + §5
 macsub mode [toggle|best]           # show/set config.json swapMode
+macsub best --auto [--max-age 5m] [--timeout 4s]  # §12: unattended best swap; exit 0 always, one stderr line only on a swap
+macsub on-limit                     # §12: StopFailure hook; stdin JSON, acts on error rate_limit (or no payload), notifies
+macsub statusline                   # §12: cache-only segment; spawns a throttled background refresh
+macsub usage --refresh-cache        # §12: silent cache refresh (no token refreshes); the status line's refresher
 macsub rm <name>
 macsub refresh [name]               # L1 only
 macsub login <name> [--store-password]  # force L2/L3; --store-password saves keychain password for future auto-fills (prompt, never echo)
@@ -228,3 +232,41 @@ left ÷ hours to the weekly reset (168 when the week has not started, minimum 1
 hour), times min(1, 5h % left ÷ 25) unless the 5h window resets within 30 min.
 Order: ready, low, unknown, blocked; score descending. The current account is
 kept when it shares the top tier and its score × 1.15 ≥ the top score.
+
+## 12. Automation (`best --auto`, `on-limit`, `statusline`)
+
+`autoBest` (`src/auto.ts`), shared by `best --auto` (trigger `auto`) and
+`on-limit` (trigger `limit`, 8s read timeout):
+
+1. Fewer than two vaulted accounts: skipped.
+2. Try-once lock `~/.macsub/auto.lock` (stale after 120s). Held: skipped as busy
+   (no notification), so N sessions limited together make one swap.
+3. Cheap path (`--max-age`, `best --auto` only): every account has a cached
+   snapshot no older than max-age and §11 still picks the current account: kept,
+   no request.
+4. Live read: `collectUsage` with `refresh: false` (no token refreshes), abandoned
+   after the timeout. Timeout, no data: skipped.
+5. Best is current: kept.
+6. `refreshAccount` (L1) on the target; anything but fresh/refreshed: skipped with
+   `run: macsub login <name>`. Never L2/L3.
+7. §4 swap. Failure: skipped.
+
+Only reads are abandoned on timeout. The target refresh and the swap always run
+to completion (a refresh cut short after rotation leaves a dead refresh token;
+the keychain write is delete-then-add). Every decision appends
+`<ISO> <trigger> <kept|swapped|skipped> <from>[-><to>] <reason>` to
+`~/.macsub/auto.log` (trimmed to its newer half past 256 KB). Errors become
+skipped; neither command exits non-zero.
+
+`on-limit` reads the hook JSON from stdin (1s cap); a payload whose `error` is set
+and is not `rate_limit` is ignored. Notification: `osascript display
+notification` with title and body passed as argv (never interpolated), stderr
+off macOS.
+
+`statusline`: no TLS setup, no network, no keychain. Renders `5h/7d` then
+`name[*] session/weekly%` per account (windows past their reset show 0; color by
+the larger: ≥85 critical, ≥60 warning; dim past 30 min), `→ <best>` when §11 picks
+another account from the cache, `(<age> old)` past 30 min. When any snapshot is
+missing or older than 10 min, it spawns `usage --refresh-cache` detached, gated
+by the mtime of `~/.macsub/.usage-refresh` (created `wx`, so concurrent status
+lines start one refresher per 10 min; the usage endpoint rate-limits).
