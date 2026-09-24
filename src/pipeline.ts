@@ -13,6 +13,7 @@ import { runLoginAgent } from "./cdp/agent.js";
 import { installFreshCredential } from "./swap/swap.js";
 import { withClaudeLocks } from "./swap/locks.js";
 import { log } from "./util/log.js";
+import { describeError } from "./util/net.js";
 
 export interface EnsureOptions {
   fetchImpl?: FetchImpl;
@@ -167,7 +168,7 @@ export async function ensureHealthy(
         log.warn("saved web session is stale — marking and trying the browser agent");
         await vault.save({ ...rec, webSession: { ...rec.webSession, stale: true } });
       } else {
-        log.warn(`web-session login failed: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(`web-session login failed: ${describeError(err)}`);
       }
     }
   }

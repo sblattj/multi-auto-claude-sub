@@ -13,7 +13,9 @@ macsub add personal        # vault the account you're logged into right now
 macsub add work
 macsub swap work           # switch Claude Code accounts; auto-heals expired tokens
 macsub swap                # two accounts vaulted? bare swap toggles to the other one
-macsub ls                  # every account with access/refresh expiry at a glance
+macsub ls                  # every account: token expiry plus 5h and weekly usage
+macsub usage               # usage bars for every account, and which one to use now
+macsub best                # swap to the account whose weekly allowance expires soonest
 ```
 
 `macsub` is for people juggling **multiple Claude accounts** — a personal Pro and a
@@ -78,11 +80,45 @@ switching.)
 ```
 macsub add <name> [--session-key <sk-ant-…>]   vault the current login
 macsub ls | current | rm <name> | rename <old> <new>
-macsub swap <name>      (alias: use)
+macsub usage [--json]                          5h + weekly usage per account, and the best pick
+macsub swap [name] [--best | --toggle]         (alias: use; `macsub best` = swap --best)
+macsub mode [toggle|best]                      what a bare `macsub swap` does (default toggle)
 macsub refresh [name]
 macsub login <name> [--store-password]         force the re-login ladder
 macsub doctor                                  paths, keychain, locks, Chrome port
 ```
+
+## Usage and the best account
+
+`macsub usage` reads the same numbers as Claude Code's `/usage` screen for every
+vaulted account (5-hour session window, weekly window, per-model weekly limits,
+extra-usage spend) and marks the best one to use right now. `macsub ls` shows the
+same 5h and weekly percentages; readings marked `*` come from the last cached
+snapshot (`~/.macsub/usage.json`) because the account's access token had expired.
+
+Weekly allowance is use-it-or-lose-it, so **best** is the account whose unused
+allowance expires fastest: weekly % left ÷ hours until the weekly reset.
+
+| account | weekly used | resets in | left ÷ hours | pick |
+|---|---|---|---|---|
+| A | 90% | 7 days | 10 ÷ 168 ≈ 0.06 | |
+| B | 10% | 1 day | 90 ÷ 24 = 3.75 | **B** |
+
+Accounts at a limit are skipped (if all are, the one that frees up first wins), a
+5-hour window with under 25% left counts against an account unless it resets
+within 30 minutes, an account with under 5% of its week left only wins when
+nothing else is usable, and near ties keep the current account so you don't
+restart sessions for nothing. `macsub best` swaps to the pick; `macsub mode best`
+makes a bare `macsub swap` do the same.
+
+## Corporate proxies (Zscaler, Netskope)
+
+TLS-inspecting proxies re-sign HTTPS with a root certificate that only the OS
+trusts, which makes Node's built-in fetch fail with `fetch failed` /
+`UNABLE_TO_GET_ISSUER_CERT_LOCALLY`. On Node ≥22.19 or ≥24.5, `macsub` adds the
+OS certificate store (macOS Keychain, Windows store) to Node's roots at startup;
+`macsub doctor` reports it and probes both endpoints. On older Node, run with
+`NODE_OPTIONS=--use-system-ca`. `MACSUB_SYSTEM_CA=0` turns the behavior off.
 
 ## Browser agent setup
 

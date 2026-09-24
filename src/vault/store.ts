@@ -104,11 +104,33 @@ class FileVault implements Vault {
   }
 
   async setActive(name: string | null): Promise<void> {
-    await this.ensureHome();
-    await writeFileAtomic(
-      join(this.home, "config.json"),
-      JSON.stringify({ activeAccount: name }, null, 2) + "\n",
-      0o600,
-    );
+    await updateVaultConfig({ activeAccount: name }, this.home);
   }
+}
+
+export type SwapMode = "toggle" | "best";
+
+export interface VaultConfig {
+  activeAccount?: string | null;
+  /** what a bare `macsub swap` does (default toggle) */
+  swapMode?: SwapMode;
+  [k: string]: unknown;
+}
+
+export async function readVaultConfig(home: string = pathsFor().macsubHome): Promise<VaultConfig> {
+  try {
+    const obj: unknown = JSON.parse(await readFile(join(home, "config.json"), "utf8"));
+    return typeof obj === "object" && obj !== null && !Array.isArray(obj) ? (obj as VaultConfig) : {};
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return {};
+    throw e;
+  }
+}
+
+/** read-modify-write: keys not in `patch` are kept */
+export async function updateVaultConfig(patch: VaultConfig, home: string = pathsFor().macsubHome): Promise<void> {
+  await mkdir(home, { recursive: true });
+  await chmod(home, 0o700);
+  const cur = await readVaultConfig(home);
+  await writeFileAtomic(join(home, "config.json"), JSON.stringify({ ...cur, ...patch }, null, 2) + "\n", 0o600);
 }

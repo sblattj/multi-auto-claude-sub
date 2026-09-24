@@ -17,6 +17,8 @@ export interface ResolvedPaths {
   macsubHome: string;
   accountsDir: string;
   vaultConfigFile: string;
+  /** last usage snapshot per account (no secrets) */
+  usageCacheFile: string;
   configDir: string;
   credentialsFile: string;
   primaryClaudeJson: string;
@@ -75,6 +77,7 @@ export function pathsFor(env: NodeJS.ProcessEnv = process.env): ResolvedPaths {
     macsubHome,
     accountsDir: join(macsubHome, "accounts"),
     vaultConfigFile: join(macsubHome, "config.json"),
+    usageCacheFile: join(macsubHome, "usage.json"),
     configDir,
     credentialsFile,
     primaryClaudeJson,

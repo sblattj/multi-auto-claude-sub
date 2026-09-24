@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import type { AccountRecord, ActiveState, Vault } from "./types.js";
 import { pathsFor } from "./paths.js";
-import { createVault } from "./vault/store.js";
+import { createVault, readVaultConfig, updateVaultConfig, type SwapMode } from "./vault/store.js";
 import { createActiveState } from "./vault/credentials.js";
 import { swap } from "./swap/swap.js";
 import { detectLiveSessions } from "./swap/sessions.js";
@@ -17,6 +17,12 @@ import { OAuthClient } from "./oauth/client.js";
 import { ensureHealthy, refreshAccount } from "./pipeline.js";
 import { discoverBase } from "./cdp/connection.js";
 import { log } from "./util/log.js";
+import { describeError, systemCaStatus, trustSystemCAs, TLS_TRUST_HINT } from "./util/net.js";
+import { TOKEN_URL } from "./oauth/client.js";
+import { USAGE_URL } from "./usage/usage.js";
+import { collectUsage, type AccountUsage } from "./usage/collect.js";
+import { pickBest, rankAccounts, type Ranked } from "./usage/rank.js";
+import { explainPick, fmtAge, fmtDetails, fmtReset, fmtWindow } from "./usage/format.js";
 
 const execFileP = promisify(execFile);
 
@@ -24,9 +30,15 @@ const HELP = `macsub — switch between multiple Claude Code subscription accoun
 
 Usage:
   macsub add <name> [--session-key <sk-ant-…>]   vault the CURRENT Claude Code login under <name>
-  macsub ls                                      list vaulted accounts with token expiry
+  macsub ls                                      list vaulted accounts: token expiry + usage
+  macsub usage [--json]                          5-hour and weekly usage for every account, and
+                                                 which one is best to use right now
   macsub current                                 show the active account + live login email
-  macsub swap [name]     (alias: use)            switch accounts; with no name and exactly\n                                               two vaulted accounts, toggles to the other one
+  macsub swap [name]     (alias: use)            switch accounts; with no name: the mode's pick
+  macsub swap --best     (alias: best)           switch to the best account by usage (see below)
+  macsub swap --toggle                           with exactly two accounts, switch to the other one
+  macsub mode [toggle|best]                      show or set what a bare \`macsub swap\` does
+                                                 (default toggle)
   macsub rm <name>                               remove an account from the vault
   macsub rename <old> <new>                      rename a vaulted account
   macsub refresh [name]                          refresh tokens (L1) for account (default: active)
@@ -34,6 +46,11 @@ Usage:
   macsub doctor                                  check config paths, keychain, locks, Chrome debug port
 
 Exit codes: 0 ok · 2 warnings only · 1 failure
+
+Best account: weekly allowance is use-it-or-lose-it, so the pick is the account whose
+unused allowance expires fastest (weekly % left ÷ hours until it resets). Accounts at a
+limit are skipped and a nearly spent 5-hour window counts against an account.
+E.g. A 90% used, resets in 7d vs B 10% used, resets in 1d → B.
 
 Auto-login ladder: valid token → refresh token → saved claude.ai web session (headless)
 → CDP browser agent in a background tab (needs Chrome with --remote-debugging-port; see
@@ -53,10 +70,12 @@ function fmtExpiry(ms: number | undefined): string {
   return h > 0 ? `${h}h` : "expired";
 }
 
+const ACCOUNT_HEADER = ["account", "email", "tokens", "access", "refresh", "web"];
+
 function accountRow(rec: AccountRecord, activeName: string | null): string[] {
   const a = assess(rec.credential);
   const oauth = rec.credential.claudeAiOauth;
-  const web = rec.webSession ? (rec.webSession.stale ? "stale" : "saved") : "—";
+  const web = rec.webSession ? (rec.webSession.stale ? "stale" : "saved") : "-";
   return [
     rec.name === activeName ? `${rec.name} *` : rec.name,
     rec.oauthAccount.emailAddress,
@@ -67,12 +86,109 @@ function accountRow(rec: AccountRecord, activeName: string | null): string[] {
   ];
 }
 
+/** "62%" / "90% (6d 23h)", "*" marking a cached reading */
+function usageCells(u: AccountUsage | undefined, now: number): string[] {
+  if (!u?.usage) return ["-", "-"];
+  const mark = u.cached ? "*" : "";
+  const pct = (p: number | undefined) => (p === undefined ? "-" : `${Math.round(p)}%${mark}`);
+  const week = u.usage.weekly;
+  return [pct(u.usage.session?.pct), week ? `${pct(week.pct)} (${fmtReset(week, now)})` : "-"];
+}
+
+/** Why a reading is cached or missing, one line per affected account. */
+function cachedFootnote(usages: AccountUsage[], now: number): string[] {
+  return usages.flatMap((u) => {
+    if (u.cached && u.usage) return [`* ${u.name}: cached ${fmtAge(now - u.usage.fetchedAt)} (${u.error ?? "live read failed"})`];
+    if (!u.usage && u.error) return [`${u.name}: usage unavailable (${u.error})`];
+    return [];
+  });
+}
+
+function printUsageTable(usages: AccountUsage[], activeName: string | null, best: Ranked | undefined, now: number): void {
+  const rows = usages.map((u) => {
+    const s = u.usage?.session;
+    const w = u.usage?.weekly;
+    const asOf = !u.usage ? "-" : u.cached ? `${fmtAge(now - u.usage.fetchedAt)}*` : "live";
+    return [
+      u.name === activeName ? `${u.name} *` : u.name,
+      u.email,
+      fmtWindow(s),
+      fmtReset(s, now),
+      fmtWindow(w),
+      fmtReset(w, now),
+      asOf,
+      best?.name === u.name ? "← best" : "",
+    ];
+  });
+  printTable(rows, ["account", "email", "5h session", "resets", "weekly", "resets", "as of", ""]);
+  for (const u of usages) {
+    const details = u.usage ? fmtDetails(u.usage) : "";
+    if (details) log.info(`${u.name}: ${details}`);
+  }
+  for (const f of cachedFootnote(usages, now)) log.info(f);
+}
+
+interface BestPick {
+  usages: AccountUsage[];
+  ranked: Ranked[];
+  best: Ranked | undefined;
+}
+
+async function findBest(vault: Vault, active: ActiveState): Promise<BestPick> {
+  const usages = await collectUsage(vault, active, { refresh: true });
+  const ranked = rankAccounts(usages);
+  return { usages, ranked, best: pickBest(ranked, await vault.activeAccount()) };
+}
+
 function printTable(rows: string[][], header: string[]): void {
   const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]?.length ?? 0)));
-  const line = (cells: string[]) => cells.map((c, i) => c.padEnd(widths[i]!)).join("  ");
+  const line = (cells: string[]) => cells.map((c, i) => c.padEnd(widths[i]!)).join("  ").trimEnd();
   console.log(line(header));
-  console.log(widths.map((w) => "-".repeat(w)).join("  "));
+  console.log(widths.map((w, i) => (header[i] ? "-" : " ").repeat(w)).join("  ").trimEnd());
   for (const r of rows) console.log(line(r));
+}
+
+function describeCaStatus(): string {
+  const ca = systemCaStatus();
+  switch (ca?.mode) {
+    case "added":
+      return `trusting ${ca.count} extra root(s) from the OS certificate store (TLS-inspecting proxy?)`;
+    case "none-needed":
+      return "Node's bundled roots (the OS store adds nothing)";
+    case "disabled":
+      return "OS certificate store disabled by MACSUB_SYSTEM_CA=0";
+    case "failed":
+      return `couldn't load the OS certificate store: ${ca.detail}`;
+    default:
+      return `this Node (${process.version}) can't load the OS certificate store; if requests fail with a certificate error: ${TLS_TRUST_HINT}`;
+  }
+}
+
+/** After a swap: where both accounts stand, plus a nudge when toggling
+ *  landed on the worse one. Never fails the swap. */
+async function printSwapUsage(vault: Vault, active: ActiveState, name: string, pick: BestPick | undefined): Promise<void> {
+  try {
+    // after a toggle, don't refresh the outgoing account: sessions still running
+    // on it hold its refresh token
+    const usages = pick?.usages ?? (await collectUsage(vault, active, { refresh: false }));
+    const now = Date.now();
+    for (const u of usages) {
+      const s = u.usage?.session;
+      const w = u.usage?.weekly;
+      const mark = u.cached ? "*" : "";
+      const text = u.usage
+        ? `5h ${s ? `${Math.round(s.pct)}%${mark} (resets ${fmtReset(s, now)})` : "-"} · weekly ${w ? `${Math.round(w.pct)}%${mark} (resets ${fmtReset(w, now)})` : "-"}`
+        : "usage unavailable";
+      log.info(`${u.name === name ? "→" : " "} ${u.name}: ${text}`);
+    }
+    for (const f of cachedFootnote(usages, now)) log.info(f);
+    if (!pick) {
+      const best = pickBest(rankAccounts(usages, now), name);
+      if (best && best.name !== name) log.info(`tip: ${best.name} looks better right now; macsub swap --best`);
+    }
+  } catch {
+    /* usage is informational */
+  }
 }
 
 async function readStoredPassword(name: string): Promise<string | undefined> {
@@ -116,6 +232,8 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  // before any request: TLS-inspecting proxies need the OS certificate store
+  trustSystemCAs();
   const vault: Vault = createVault();
   const active: ActiveState = createActiveState();
 
@@ -159,9 +277,56 @@ async function main(): Promise<number> {
         return 0;
       }
       const activeName = await vault.activeAccount();
+      const now = Date.now();
+      // live usage where the access token is still valid, cached otherwise;
+      // ls never refreshes tokens
+      const usages = await collectUsage(vault, active, { refresh: false }).catch((): AccountUsage[] => []);
+      const byName = new Map(usages.map((u) => [u.name, u]));
       printTable(
-        recs.map((r) => accountRow(r, activeName)),
-        ["account", "email", "tokens", "access", "refresh", "web"],
+        recs.map((r) => [...accountRow(r, activeName), ...usageCells(byName.get(r.name), now)]),
+        [...ACCOUNT_HEADER, "5h", "weekly"],
+      );
+      for (const f of cachedFootnote(usages, now)) log.info(f);
+      return 0;
+    }
+
+    case "usage": {
+      const { values } = parseArgs({ args: rest, options: { json: { type: "boolean" } } });
+      const usages = await collectUsage(vault, active, { refresh: true });
+      const now = Date.now();
+      const activeName = await vault.activeAccount();
+      const ranked = rankAccounts(usages, now);
+      const best = pickBest(ranked, activeName);
+      const degraded = usages.some((u) => !u.usage || u.cached);
+      if (values.json) {
+        const accounts = usages.map((u) => ({ ...u, active: u.name === activeName, rank: ranked.find((r) => r.name === u.name) }));
+        console.log(JSON.stringify({ best: best?.name ?? null, accounts }, null, 2));
+        return degraded ? 2 : 0;
+      }
+      if (usages.length === 0) {
+        log.info("vault is empty: `macsub add <name>` after logging in with Claude Code");
+        return 0;
+      }
+      printUsageTable(usages, activeName, best, now);
+      const [head, ...rest2] = explainPick(best, ranked, now);
+      log.step(head!);
+      for (const l of rest2) log.info(l);
+      if (best && best.name !== activeName) log.info("switch with: macsub swap --best");
+      return degraded ? 2 : 0;
+    }
+
+    case "mode": {
+      const m = rest[0];
+      if (!m) {
+        log.info(`bare \`macsub swap\` mode: ${(await readVaultConfig()).swapMode ?? "toggle"}`);
+        return 0;
+      }
+      if (m !== "toggle" && m !== "best") usage("macsub mode [toggle|best]");
+      await updateVaultConfig({ swapMode: m satisfies SwapMode });
+      log.info(
+        m === "best"
+          ? "bare `macsub swap` now switches to the best account by usage"
+          : "bare `macsub swap` now toggles between two accounts",
       );
       return 0;
     }
@@ -176,9 +341,35 @@ async function main(): Promise<number> {
     }
 
     case "swap":
-    case "use": {
-      let name = rest[0];
-      if (!name) {
+    case "use":
+    case "best": {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        options: { best: { type: "boolean" }, toggle: { type: "boolean" } },
+        allowPositionals: true,
+      });
+      let name = positionals[0];
+      let wantBest = cmd === "best" || values.best === true;
+      if (wantBest && values.toggle) usage("--best and --toggle don't mix");
+      if (name && (wantBest || values.toggle)) usage("name an account or pass --best/--toggle, not both");
+      if (!name && !wantBest && !values.toggle) wantBest = (await readVaultConfig()).swapMode === "best";
+      let pick: BestPick | undefined;
+      if (wantBest) {
+        log.step("reading usage for every account…");
+        pick = await findBest(vault, active);
+        const now = Date.now();
+        for (const l of explainPick(pick.best, pick.ranked, now)) log.info(l);
+        for (const f of cachedFootnote(pick.usages, now)) log.info(f);
+        if (!pick.best) {
+          log.err("can't pick without usage data; see: macsub usage");
+          return 1;
+        }
+        if (pick.best.name === (await vault.activeAccount())) {
+          log.info(`already on ${pick.best.name}, nothing to swap`);
+          return 0;
+        }
+        name = pick.best.name;
+      } else if (!name) {
         const { resolveToggle } = await import("./swap/toggle.js");
         name = (await resolveToggle(vault, active)).to;
       }
@@ -217,6 +408,7 @@ async function main(): Promise<number> {
         log.warn(`auto-login did not complete (${health.level})${health.detail ? `: ${health.detail}` : ""}`);
         return result.warnings.length > 0 ? 2 : 1;
       }
+      await printSwapUsage(vault, active, name, pick);
       return result.warnings.length > 0 ? 2 : 0;
     }
 
@@ -303,13 +495,23 @@ async function main(): Promise<number> {
       for (const [label, lk] of [["oauth refresh lock", p.oauthRefreshLock], ["claude.lock", p.claudeLock], ["config lock", p.claudeJsonLock]] as const) {
         log.info(`${label}: ${existsSync(lk) ? "PRESENT (claude running?)" : "free"}`);
       }
+      log.info(`TLS trust: ${describeCaStatus()}`);
+      for (const url of [TOKEN_URL, USAGE_URL]) {
+        const host = new URL(url).host;
+        try {
+          const r = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(8_000) });
+          log.info(`network: ${host} reachable (HTTP ${r.status})`);
+        } catch (err) {
+          log.warn(`network: ${host} unreachable: ${describeError(err)}`);
+        }
+      }
       const base = await discoverBase();
       if (base) log.info(`Chrome debug endpoint: ${base} (browser agent ready)`);
       else log.warn("Chrome debug endpoint: none found — start Chrome with --remote-debugging-port for the login agent ($CDP_BASE overrides)");
       const recs = await vault.list();
       if (recs.length > 0) {
         const activeName = await vault.activeAccount();
-        printTable(recs.map((r) => accountRow(r, activeName)), ["account", "email", "tokens", "access", "refresh", "web"]);
+        printTable(recs.map((r) => accountRow(r, activeName)), ACCOUNT_HEADER);
       }
       return 0;
     }
@@ -322,7 +524,7 @@ async function main(): Promise<number> {
 main().then(
   (code) => process.exit(code),
   (err) => {
-    log.err(err instanceof Error ? err.message : String(err));
+    log.err(describeError(err));
     process.exit(1);
   },
 );
