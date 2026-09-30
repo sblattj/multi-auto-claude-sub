@@ -18,6 +18,7 @@ import { OAuthClient } from "./oauth/client.js";
 import { ensureHealthy, refreshAccount } from "./pipeline.js";
 import { discoverBase } from "./cdp/connection.js";
 import { log } from "./util/log.js";
+import { envOverrideWarnings, envOverrides } from "./util/envwarn.js";
 import { describeError, systemCaStatus, trustSystemCAs, TLS_TRUST_HINT } from "./util/net.js";
 import { TOKEN_URL } from "./oauth/client.js";
 import { USAGE_URL } from "./usage/usage.js";
@@ -38,6 +39,7 @@ Usage:
   macsub usage [--json]                          5-hour and weekly usage for every account, and
                                                  which one is best to use right now
   macsub current                                 show the active account + live login email
+                                                  (warns when env vars override auth)
   macsub swap [name]     (alias: use)            switch accounts; with no name: the mode's pick
   macsub swap --best     (alias: best)           switch to the best account by usage (see below)
   macsub swap --toggle                           with exactly two accounts, switch to the other one
@@ -53,7 +55,8 @@ Usage:
   macsub rename <old> <new>                      rename a vaulted account
   macsub refresh [name]                          refresh tokens (L1) for account (default: active)
   macsub login <name> [--store-password]         force re-login: saved web session, then browser agent
-  macsub doctor                                  check config paths, keychain, locks, Chrome debug port
+  macsub doctor                                  check config paths, keychain, locks, Chrome debug port,
+                                                  env overrides
 
 Exit codes: 0 ok · 2 warnings only · 1 failure
 
@@ -435,6 +438,7 @@ async function main(): Promise<number> {
       if (identity) log.info(`live login: ${identity.emailAddress}`);
       else log.info("live login: none found");
       log.info(`vault active account: ${activeName ?? "(none)"}`);
+      for (const w of envOverrideWarnings(envOverrides())) log.warn(w);
       return identity || activeName ? 0 : 1;
     }
 
@@ -607,6 +611,10 @@ async function main(): Promise<number> {
       } else {
         log.warn("live credentials: NOT found");
       }
+      // what claude ACTUALLY authenticates with: env vars beat the keychain
+      const overrides = envOverrides();
+      if (overrides.length > 0) for (const w of envOverrideWarnings(overrides)) log.warn(w);
+      else log.info("env overrides: none");
       for (const [label, lk] of [["oauth refresh lock", p.oauthRefreshLock], ["claude.lock", p.claudeLock], ["config lock", p.claudeJsonLock]] as const) {
         log.info(`${label}: ${existsSync(lk) ? "PRESENT (claude running?)" : "free"}`);
       }
@@ -628,7 +636,8 @@ async function main(): Promise<number> {
         const activeName = await vault.activeAccount();
         printTable(recs.map((r) => accountRow(r, activeName)), ACCOUNT_HEADER);
       }
-      return 0;
+      // env overrides are a warning, not a failure: macsub itself still works
+      return overrides.length > 0 ? 2 : 0;
     }
 
     default:

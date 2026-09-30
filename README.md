@@ -79,7 +79,9 @@ switching.)
 
 ```
 macsub add <name> [--session-key <sk-ant-…>]   vault the current login
-macsub ls | current | rm <name> | rename <old> <new>
+macsub ls | rm <name> | rename <old> <new>
+macsub current                                  active account + live login email
+                                                (warns when env vars override auth)
 macsub usage [--json]                          5h + weekly usage per account, and the best pick
 macsub swap [name] [--best | --toggle]         (alias: use; `macsub best` = swap --best)
 macsub mode [toggle|best]                      what a bare `macsub swap` does (default toggle)
@@ -88,8 +90,21 @@ macsub on-limit                                Claude Code StopFailure hook: swa
 macsub statusline                              status-line segment: every account's 5h/7d from the cache
 macsub refresh [name]
 macsub login <name> [--store-password]         force the re-login ladder
-macsub doctor                                  paths, keychain, locks, Chrome port
+macsub doctor                                  paths, keychain, locks, Chrome port, env overrides
 ```
+
+## Environment overrides
+
+Claude Code authenticates with environment variables before it ever reads the
+keychain subscription login (`ANTHROPIC_AUTH_TOKEN` > `ANTHROPIC_API_KEY` >
+apiKeyHelper > `CLAUDE_CODE_OAUTH_TOKEN` > … > keychain). A shell that exports
+any of `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`
+or `ANTHROPIC_BASE_URL` silently defeats the vault: `claude` bills a different
+(say, spend-limited) account while the vaulted one still looks active. When any
+of them is set and non-empty, `macsub current` prints a warning block and
+`macsub doctor` fails its env-override check (exit code 2, warnings only).
+`env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN claude`
+runs Claude Code on the vault account.
 
 ## Usage and the best account
 
