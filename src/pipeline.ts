@@ -14,12 +14,19 @@ import { installFreshCredential } from "./swap/swap.js";
 import { withClaudeLocks } from "./swap/locks.js";
 import { log } from "./util/log.js";
 import { describeError } from "./util/net.js";
+import { resolveLoginTimeoutMs } from "./util/duration.js";
+
+/** Browser-login deadline when neither --timeout nor $MACSUB_LOGIN_TIMEOUT is set. */
+export const DEFAULT_LOGIN_TIMEOUT_MS = 180_000;
+/** Minimum wait once claude.ai asks for an emailed one-time code. */
+export const DEFAULT_OTP_TIMEOUT_MS = 600_000;
 
 export interface EnsureOptions {
   fetchImpl?: FetchImpl;
   /** account password for the browser login form (opt-in keychain storage; cli supplies) */
   password?: string;
   onNotify?: (msg: string) => void;
+  /** browser-login deadline; default $MACSUB_LOGIN_TIMEOUT, else DEFAULT_LOGIN_TIMEOUT_MS */
   loginTimeoutMs?: number;
   /** skip L0/L1 and go straight to L2/L3 (macsub login) */
   force?: boolean;
@@ -199,7 +206,9 @@ async function browserLogin(
     loginHint: rec.oauthAccount.emailAddress,
   });
 
-  const timeoutMs = opts.loginTimeoutMs ?? 180_000;
+  const timeoutMs =
+    opts.loginTimeoutMs ??
+    resolveLoginTimeoutMs(undefined, opts.env ?? process.env, DEFAULT_LOGIN_TIMEOUT_MS, (m) => log.warn(m));
   // No listener timeout: the agent owns the deadline and reports the page it
   // stalled on. A second timer here fired first and hid that detail.
   const done = listener.waitForCode();
@@ -214,6 +223,7 @@ async function browserLogin(
         email: rec.oauthAccount.emailAddress,
         ...(opts.password !== undefined ? { password: opts.password } : {}),
         timeoutMs,
+        otpTimeoutMs: DEFAULT_OTP_TIMEOUT_MS,
         onNotify: notify,
       },
       {
@@ -225,6 +235,9 @@ async function browserLogin(
   }
 
   if (!result.success || !result.callback) {
+    if (result.stage === "timeout") {
+      notify(`tip: allow more time with: macsub login ${accountName} --timeout 10m  (or set MACSUB_LOGIN_TIMEOUT)`);
+    }
     notify("automatic login failed — manual fallback:");
     notify(`  1. run: claude auth login  (log in as ${rec.oauthAccount.emailAddress})`);
     notify(`  2. run: macsub add ${accountName}   (re-captures the fresh login)`);

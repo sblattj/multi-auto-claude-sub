@@ -89,8 +89,19 @@ macsub best --auto [--max-age 5m] [--timeout 4s]  unattended best swap (for a `c
 macsub on-limit                                Claude Code StopFailure hook: swap to the best account, notify
 macsub statusline                              status-line segment: every account's 5h/7d from the cache
 macsub refresh [name]
-macsub login <name> [--store-password]         force the re-login ladder
+macsub login <name> [--store-password] [--timeout 10m]  force the re-login ladder
 macsub doctor                                  paths, keychain, locks, Chrome port, env overrides
+```
+
+## Login timeout
+
+The browser agent waits 3 minutes for the login to finish. Once claude.ai asks
+for an emailed one-time code it waits at least 10 minutes from that point, since
+you have to go fetch the code. To change the base wait:
+
+```sh
+macsub login work --timeout 10m        # one run
+export MACSUB_LOGIN_TIMEOUT=10m        # every browser login, including swaps
 ```
 
 ## Environment overrides

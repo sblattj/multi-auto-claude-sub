@@ -110,6 +110,8 @@ export interface LoginAgentResult {
 
 export interface LoginAgentOptions {
   timeoutMs?: number;
+  /** once the page asks for an emailed one-time code, wait at least this long from then */
+  otpTimeoutMs?: number;
   pollMs?: number;
   /** account email for the login form */
   email: string;
