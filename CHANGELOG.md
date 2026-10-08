@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.10 — 2026-10-08
 
 - `macsub login <name> --timeout <duration>` sets how long the browser agent
   waits (default 3m). `MACSUB_LOGIN_TIMEOUT` sets it for every browser login,
