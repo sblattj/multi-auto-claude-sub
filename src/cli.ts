@@ -27,7 +27,7 @@ import { pickBest, rankAccounts, type Ranked } from "./usage/rank.js";
 import { explainPick, fmtAge, fmtDetails, fmtReset, fmtWindow } from "./usage/format.js";
 import { autoBest, DEFAULT_AUTO_TIMEOUT_MS, type AutoResult } from "./auto.js";
 import { needsRefresh, renderStatusline, spawnBackgroundRefresh } from "./usage/statusline.js";
-import { parseDuration } from "./util/duration.js";
+import { parseDuration, resolveLoginTimeoutMs } from "./util/duration.js";
 
 const execFileP = promisify(execFile);
 
@@ -54,7 +54,10 @@ Usage:
   macsub rm <name>                               remove an account from the vault
   macsub rename <old> <new>                      rename a vaulted account
   macsub refresh [name]                          refresh tokens (L1) for account (default: active)
-  macsub login <name> [--store-password]         force re-login: saved web session, then browser agent
+  macsub login <name> [--store-password] [--timeout 10m]
+                                                 force re-login: saved web session, then browser agent
+                                                 (browser wait: --timeout, else $MACSUB_LOGIN_TIMEOUT,
+                                                 else 3m; at least 10m once an email code is asked for)
   macsub doctor                                  check config paths, keychain, locks, Chrome debug port,
                                                   env overrides
 
@@ -568,11 +571,19 @@ async function main(): Promise<number> {
     case "login": {
       const { values, positionals } = parseArgs({
         args: rest,
-        options: { "store-password": { type: "boolean" } },
+        options: { "store-password": { type: "boolean" }, timeout: { type: "string" } },
         allowPositionals: true,
       });
       const name = positionals[0];
       if (!name) usage("macsub login <name>");
+      let loginTimeoutMs: number | undefined;
+      if (values.timeout !== undefined) {
+        try {
+          loginTimeoutMs = resolveLoginTimeoutMs(values.timeout, {}, 0);
+        } catch (e) {
+          usage(`--timeout: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
       const rec = await requireAccount(vault, name);
       let password = await readStoredPassword(name);
       if (values["store-password"]) {
@@ -587,6 +598,7 @@ async function main(): Promise<number> {
       const result = await ensureHealthy(vault, active, name, {
         force: true,
         ...(password !== undefined ? { password } : {}),
+        ...(loginTimeoutMs !== undefined ? { loginTimeoutMs } : {}),
         onNotify: (m) => log.warn(m),
       });
       if (result.level === "refreshed") {
