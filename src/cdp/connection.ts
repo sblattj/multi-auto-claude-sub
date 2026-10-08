@@ -182,7 +182,9 @@ export class CdpConnection implements CdpSender {
    * the active route for send(). Never touches pre-existing tabs.
    */
   async newTab(url: string): Promise<{ targetId: string; wsUrl: string }> {
-    const targetUrl = `${this.base}/json/new?${new URLSearchParams({ url })}`;
+    // The whole query string IS the URL (`/json/new?<url>`); a `url=` param makes
+    // Chrome open about:blank and the agent stalls there until timeout.
+    const targetUrl = `${this.base}/json/new?${encodeURIComponent(url)}`;
     let res = await fetch(targetUrl, { method: "PUT", signal: AbortSignal.timeout(this.timeoutMs) });
     if (res.status === 405) {
       res = await fetch(targetUrl, { signal: AbortSignal.timeout(this.timeoutMs) });

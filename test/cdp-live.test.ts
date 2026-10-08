@@ -6,6 +6,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { CdpConnection, discoverBase, evalInPage } from "../src/cdp/connection.js";
 import { CONTINUE_BUTTON_EXPR, EMAIL_FIELD_EXPR, PAGE_CLASSIFIER_EXPR } from "../src/cdp/classify.js";
 import { pollForActionable, trustedClick, withFocusEmulation } from "../src/cdp/focus.js";
@@ -116,6 +118,35 @@ test(
     } finally {
       if (targetId) await conn.closeTab(targetId).catch(() => {});
       conn.close();
+    }
+  },
+);
+
+test(
+  "live: newTab lands on the requested URL (query string and all), not about:blank",
+  { skip: LIVE ? false : "set MACSUB_CDP_LIVE=1 to run" },
+  async () => {
+    const base = await discoverBase();
+    assert.ok(base, "no Chrome DevTools endpoint discovered");
+    const server = http.createServer((_req, res) => res.end("<!doctype html><title>ok</title>"));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as AddressInfo).port;
+    const want = `http://127.0.0.1:${port}/authorize?a=1&redirect_uri=http%3A%2F%2Flocalhost%3A5555%2Fcallback&b=2`;
+    const conn = await CdpConnection.open(base);
+    let targetId = "";
+    try {
+      targetId = (await conn.newTab(want)).targetId;
+      let href = "";
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && href !== want) {
+        href = String(await evalInPage(conn, "location.href"));
+        if (href !== want) await new Promise((r) => setTimeout(r, 100));
+      }
+      assert.equal(href, want);
+    } finally {
+      if (targetId) await conn.closeTab(targetId).catch(() => {});
+      conn.close();
+      server.close();
     }
   },
 );
