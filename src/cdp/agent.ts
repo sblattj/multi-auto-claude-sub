@@ -137,9 +137,16 @@ async function driveLoop(
   conn: CdpSender,
   listener: CallbackHandle,
   opts: LoginAgentOptions,
-  cfg: { timeoutMs: number; pollMs: number; expectedState: string | null; notify: (m: string) => void },
+  cfg: {
+    timeoutMs: number;
+    otpTimeoutMs: number;
+    pollMs: number;
+    expectedState: string | null;
+    notify: (m: string) => void;
+  },
 ): Promise<LoginAgentResult> {
-  const deadline = Date.now() + cfg.timeoutMs;
+  const start = Date.now();
+  let deadline = start + cfg.timeoutMs;
   const lastActed = new Map<string, number>();
   const canAct = (k: string): boolean => {
     const t = lastActed.get(k);
@@ -152,7 +159,7 @@ async function driveLoop(
   for (;;) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      return { success: false, stage: "timeout", detail: `no authorization after ${cfg.timeoutMs}ms (last page state: ${lastState})` };
+      return { success: false, stage: "timeout", detail: `no authorization after ${deadline - start}ms (last page state: ${lastState})` };
     }
     let cb: { code: string; state: string } | null;
     try {
@@ -203,7 +210,13 @@ async function driveLoop(
       case "otp-wait": {
         if (!otpNotified) {
           otpNotified = true;
-          cfg.notify("macsub: one-time code required — check your email and enter it in the browser window");
+          // a human now has to fetch the code from their inbox: give them room
+          deadline = Math.max(deadline, Date.now() + cfg.otpTimeoutMs);
+          const mins = Math.round((deadline - Date.now()) / 60_000);
+          cfg.notify(
+            `macsub: one-time code required — check your email and enter it in the browser window` +
+              (mins >= 1 ? ` (waiting up to ${mins} min)` : ""),
+          );
         }
         break;
       }
@@ -256,6 +269,7 @@ export async function runLoginAgent(
       return await withFocusEmulation(conn, () =>
         driveLoop(conn!, listener, opts, {
           timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+          otpTimeoutMs: opts.otpTimeoutMs ?? 0,
           pollMs: opts.pollMs ?? DEFAULT_POLL_MS,
           expectedState,
           notify,

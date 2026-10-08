@@ -4,7 +4,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { buildAuthorizeUrl, ensureHealthy, refreshAccount } from "../src/pipeline.js";
+import {
+  buildAuthorizeUrl,
+  DEFAULT_LOGIN_TIMEOUT_MS,
+  DEFAULT_OTP_TIMEOUT_MS,
+  ensureHealthy,
+  refreshAccount,
+} from "../src/pipeline.js";
 import { CLIENT_ID, type FetchImpl } from "../src/oauth/client.js";
 import type { TokenRefresher } from "../src/oauth/health.js";
 import type { runLoginAgent } from "../src/cdp/agent.js";
@@ -283,4 +289,38 @@ test("ensureHealthy: invalid_grant from the token endpoint reaches the final det
   const r = await ensureHealthy(vault, new FakeActive(), "beta", { env, fetchImpl, loginAgent, onNotify: () => {} });
   assert.match(r.detail ?? "", /refresh: oauth error invalid_grant \(HTTP 400\): Refresh token revoked/);
   assert.match(r.detail ?? "", /browser: no Chrome/);
+});
+
+test("ensureHealthy: login timeout comes from loginTimeoutMs, else MACSUB_LOGIN_TIMEOUT, else the default", async (t) => {
+  const { env, home } = await tmpEnv();
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const fetchImpl: FetchImpl = async () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+  const seen: { timeoutMs: number | undefined; otpTimeoutMs: number | undefined }[] = [];
+  const notes: string[] = [];
+  const loginAgent: typeof runLoginAgent = async (_url, opts) => {
+    seen.push({ timeoutMs: opts.timeoutMs, otpTimeoutMs: opts.otpTimeoutMs });
+    return { success: false, stage: "timeout", detail: "no authorization after 1ms (last page state: otp-wait)" };
+  };
+  const run = async (e: NodeJS.ProcessEnv, extra: { loginTimeoutMs?: number } = {}) => {
+    const vault = new FakeVault();
+    vault.records.set("beta", staleRec());
+    return ensureHealthy(vault, new FakeActive(), "beta", {
+      env: e,
+      fetchImpl,
+      loginAgent,
+      onNotify: (m) => notes.push(m),
+      ...extra,
+    });
+  };
+
+  await run(env);
+  await run({ ...env, MACSUB_LOGIN_TIMEOUT: "7m" });
+  await run({ ...env, MACSUB_LOGIN_TIMEOUT: "7m" }, { loginTimeoutMs: 1234 });
+
+  assert.deepEqual(seen, [
+    { timeoutMs: DEFAULT_LOGIN_TIMEOUT_MS, otpTimeoutMs: DEFAULT_OTP_TIMEOUT_MS },
+    { timeoutMs: 420_000, otpTimeoutMs: DEFAULT_OTP_TIMEOUT_MS },
+    { timeoutMs: 1234, otpTimeoutMs: DEFAULT_OTP_TIMEOUT_MS },
+  ]);
+  assert.ok(notes.some((n) => /macsub login beta --timeout 10m/.test(n)), "timeout failure suggests --timeout");
 });
