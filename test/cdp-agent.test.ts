@@ -228,3 +228,44 @@ test("runLoginAgent: timeout detail names the page it stalled on", async () => {
   assert.equal(res.stage, "timeout");
   assert.match(res.detail ?? "", /last page state: otp-wait at claude\.ai\/magic-link/);
 });
+
+test("runLoginAgent: otp-wait extends the deadline by otpTimeoutMs, and a late code still lands", async () => {
+  const { handle, resolve } = deferredCallback();
+  const conn = new ScriptedAgentConn({ script: [{ kind: "otp-wait" }], repeatLast: true });
+  const notified: string[] = [];
+  // code arrives after the base 40ms deadline but inside the 400ms otp window
+  setTimeout(() => resolve({ code: "LATE", state: "S" }), 150);
+  const res = await runLoginAgent(AUTH_URL, opts({ timeoutMs: 40, otpTimeoutMs: 400, pollMs: 5 }), {
+    conn,
+    startCallbackListener: () => handle,
+    onNotify: (m) => notified.push(m),
+  });
+  assert.equal(res.success, true);
+  assert.deepEqual(res.callback, { code: "LATE", state: "S" });
+  assert.equal(notified.length, 1);
+});
+
+test("runLoginAgent: otp-wait timeout reports the extended wait, not the base timeout", async () => {
+  const { handle } = deferredCallback();
+  const conn = new ScriptedAgentConn({ script: [{ kind: "otp-wait" }], repeatLast: true });
+  const t0 = Date.now();
+  const res = await runLoginAgent(AUTH_URL, opts({ timeoutMs: 20, otpTimeoutMs: 120, pollMs: 5 }), {
+    conn,
+    startCallbackListener: () => handle,
+  });
+  assert.equal(res.stage, "timeout");
+  assert.ok(Date.now() - t0 >= 110, "waited for the otp window");
+  const ms = Number(/after (\d+)ms/.exec(res.detail ?? "")?.[1]);
+  assert.ok(ms >= 110, `detail reports the extended wait: ${res.detail}`);
+});
+
+test("runLoginAgent: otpTimeoutMs never shortens a longer base timeout", async () => {
+  const { handle, resolve } = deferredCallback();
+  const conn = new ScriptedAgentConn({ script: [{ kind: "otp-wait" }], repeatLast: true });
+  setTimeout(() => resolve({ code: "C", state: "S" }), 100);
+  const res = await runLoginAgent(AUTH_URL, opts({ timeoutMs: 2000, otpTimeoutMs: 10, pollMs: 5 }), {
+    conn,
+    startCallbackListener: () => handle,
+  });
+  assert.equal(res.success, true);
+});
