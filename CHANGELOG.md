@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.11 — 2026-10-14
+
+- Releases now publish to npm from GitHub Actions over npm trusted publishing
+  (OIDC), with a provenance attestation. No code changes; this version exists
+  to prove the new publish path.
+
 ## 0.1.10 — 2026-10-08
 
 - `macsub login <name> --timeout <duration>` sets how long the browser agent
