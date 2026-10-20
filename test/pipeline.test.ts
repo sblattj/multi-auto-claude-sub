@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 import {
   buildAuthorizeUrl,
   DEFAULT_LOGIN_TIMEOUT_MS,
@@ -24,6 +24,11 @@ import type {
 } from "../src/types.js";
 
 const HOUR = 3_600_000;
+
+// The pipeline logs progress with console.log. In a test child that is the same stdout pipe the
+// runner reads v8-serialized report frames from, and raw text landing mid-frame can corrupt them
+// ("Unable to deserialize cloned data"). Keep the code under test off the real stdout.
+mock.method(console, "log", () => {});
 
 function oauth(tag: string, expiresAt: number): ClaudeAiOauth {
   return {
