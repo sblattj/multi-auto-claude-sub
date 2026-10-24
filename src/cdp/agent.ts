@@ -227,6 +227,22 @@ async function driveLoop(
 }
 
 /**
+ * Best-effort read of the HttpOnly claude.ai `sessionKey` cookie over CDP
+ * (document.cookie cannot see it). Any failure or absence yields undefined.
+ */
+async function readSessionKey(conn: CdpSender): Promise<string | undefined> {
+  try {
+    const res = await conn.send<{ cookies?: Array<{ name?: unknown; value?: unknown }> }>("Network.getCookies", {
+      urls: ["https://claude.ai"],
+    });
+    const hit = res?.cookies?.find((c) => c.name === "sessionKey" && typeof c.value === "string" && c.value !== "");
+    return hit === undefined ? undefined : (hit.value as string);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Drive the OAuth login in a background tab. Returns {success:false, stage:'no-chrome'}
  * when no debug endpoint is found; always closes its own tab, disables focus
  * emulation, and stops the callback listener — including on error paths.
@@ -266,7 +282,7 @@ export async function runLoginAgent(
       } catch {
         expectedState = null;
       }
-      return await withFocusEmulation(conn, () =>
+      const driven = await withFocusEmulation(conn, () =>
         driveLoop(conn!, listener, opts, {
           timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           otpTimeoutMs: opts.otpTimeoutMs ?? 0,
@@ -275,6 +291,11 @@ export async function runLoginAgent(
           notify,
         }),
       );
+      if (driven.success) {
+        const sessionKey = await readSessionKey(conn);
+        if (sessionKey !== undefined) return { ...driven, sessionKey };
+      }
+      return driven;
     } finally {
       if (tab) {
         try {

@@ -106,6 +106,8 @@ export interface LoginAgentResult {
   detail?: string;
   /** authorization code + state captured from the localhost callback, if we got that far */
   callback?: { code: string; state: string };
+  /** claude.ai sessionKey cookie read from the browser after a successful login (best-effort; secret, never log) */
+  sessionKey?: string;
 }
 
 export interface LoginAgentOptions {

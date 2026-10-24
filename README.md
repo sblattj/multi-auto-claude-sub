@@ -234,6 +234,11 @@ copy the `sessionKey` value (starts with `sk-ant-`), then:
 macsub add work --session-key sk-ant-…
 ```
 
+A successful browser login (ladder step 4) now saves this cookie for you: macsub
+reads the `sessionKey` over CDP, checks it belongs to the account's email, and
+stores it, so the next re-login can stay headless. The manual `--session-key`
+path above still works.
+
 (Stored in the vault file, mode 0600; never printed. When claude.ai rejects it as
 stale, macsub marks it and falls through to the browser agent.)
 

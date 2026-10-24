@@ -43,6 +43,45 @@ test("runLoginAgent: happy path — callback already captured (immediate listene
   assert.deepEqual(conn.focusToggles(), [true, false]);
 });
 
+test("runLoginAgent: success also returns the claude.ai sessionKey cookie (other cookies ignored)", async () => {
+  const { handle, resolve } = deferredCallback();
+  const conn = new ScriptedAgentConn({
+    cookies: [
+      { name: "lastActiveOrg", value: "org-1" },
+      { name: "sessionKey", value: "sk-ant-test-session-1" },
+    ],
+  });
+  resolve({ code: "CODE123", state: "ST9" });
+  const res = await runLoginAgent(AUTH_URL, opts(), { conn, startCallbackListener: () => handle });
+  assert.deepEqual(res, {
+    success: true,
+    stage: "authorized",
+    callback: { code: "CODE123", state: "ST9" },
+    sessionKey: "sk-ant-test-session-1",
+  });
+  assert.deepEqual(conn.sendsOf("Network.getCookies"), [{ urls: ["https://claude.ai"] }]);
+  assert.deepEqual(conn.closedTabs, ["T1"]);
+});
+
+test("runLoginAgent: only a differently named cookie -> no sessionKey key", async () => {
+  const { handle, resolve } = deferredCallback();
+  const conn = new ScriptedAgentConn({ cookies: [{ name: "sessionKeyLegacy", value: "sk-ant-test-other" }] });
+  resolve({ code: "C", state: "S" });
+  const res = await runLoginAgent(AUTH_URL, opts(), { conn, startCallbackListener: () => handle });
+  assert.equal(res.success, true);
+  assert.equal("sessionKey" in res, false);
+});
+
+test("runLoginAgent: Network.getCookies throwing never fails the login, tab still closed", async () => {
+  const { handle, resolve } = deferredCallback();
+  const conn = new ScriptedAgentConn({ throwOn: { "Network.getCookies": new Error("cdp boom") } });
+  resolve({ code: "C", state: "S" });
+  const res = await runLoginAgent(AUTH_URL, opts(), { conn, startCallbackListener: () => handle });
+  assert.deepEqual(res, { success: true, stage: "authorized", callback: { code: "C", state: "S" } });
+  assert.deepEqual(conn.closedTabs, ["T1"]);
+  assert.deepEqual(conn.focusToggles(), [true, false]);
+});
+
 test("runLoginAgent: full flow — email fill, disabled authorize polling, enabled click, callback", async () => {
   const { handle, resolve, isClosed } = deferredCallback();
   const emailField = { kind: "email-field", x: 10, y: 20 };

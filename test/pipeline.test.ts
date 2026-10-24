@@ -329,3 +329,95 @@ test("ensureHealthy: login timeout comes from loginTimeoutMs, else MACSUB_LOGIN_
   ]);
   assert.ok(notes.some((n) => /macsub login beta --timeout 10m/.test(n)), "timeout failure suggests --timeout");
 });
+
+// ---- browser login captures the claude.ai session cookie ----
+
+const TEST_SESSION_KEY = "sk-ant-test-session-new";
+
+function routedFetch(accountEmail: string | Error): FetchImpl {
+  return async (url, init) => {
+    if (url === "https://platform.claude.com/v1/oauth/token") {
+      const body = JSON.parse(init.body ?? "{}") as { grant_type?: string };
+      if (body.grant_type === "authorization_code") {
+        return new Response(
+          JSON.stringify({
+            access_token: "sk-ant-fake-access-new",
+            refresh_token: "sk-ant-fake-refresh-new",
+            expires_in: 3600,
+            refresh_token_expires_in: 86400,
+            scope: "user:inference",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+    }
+    if (url === "https://claude.ai/api/account") {
+      if (accountEmail instanceof Error) throw accountEmail;
+      return new Response(
+        JSON.stringify({ account: { email_address: accountEmail }, memberships: [{ organization: { uuid: "org-1" } }] }),
+        { status: 200 },
+      );
+    }
+    return new Response("{}", { status: 404 });
+  };
+}
+
+async function browserLoginWith(
+  t: { after: (fn: () => Promise<void>) => void },
+  agentSessionKey: string | undefined,
+  accountEmail: string | Error,
+  existing?: AccountRecord["webSession"],
+): Promise<{ r: Awaited<ReturnType<typeof ensureHealthy>>; saved: AccountRecord }> {
+  const { env, home } = await tmpEnv();
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const vault = new FakeVault();
+  vault.records.set("beta", { ...staleRec(), ...(existing ? { webSession: existing } : {}) });
+  const loginAgent: typeof runLoginAgent = async (url) => {
+    const state = new URL(url).searchParams.get("state") ?? "";
+    return {
+      success: true,
+      stage: "authorized",
+      callback: { code: "CODE", state },
+      ...(agentSessionKey !== undefined ? { sessionKey: agentSessionKey } : {}),
+    };
+  };
+  const r = await ensureHealthy(vault, new FakeActive(), "beta", {
+    env,
+    fetchImpl: routedFetch(accountEmail),
+    loginAgent,
+    onNotify: () => {},
+  });
+  return { r, saved: vault.records.get("beta")! };
+}
+
+test("browser login: matching-email sessionKey is saved as webSession (fresh, replaces stale)", async (t) => {
+  const { r, saved } = await browserLoginWith(t, TEST_SESSION_KEY, "Beta@Example.com", {
+    sessionKey: "sk-ant-test-session-old",
+    savedAt: 5,
+    stale: true,
+  });
+  assert.equal(r.level, "refreshed");
+  assert.equal(saved.webSession?.sessionKey, TEST_SESSION_KEY);
+  assert.equal(saved.webSession?.stale, undefined);
+  assert.ok((saved.webSession?.savedAt ?? 0) > 5);
+});
+
+test("browser login: sessionKey for another email is NOT saved, existing webSession untouched", async (t) => {
+  const existing = { sessionKey: "sk-ant-test-session-old", savedAt: 5, stale: true };
+  const { r, saved } = await browserLoginWith(t, TEST_SESSION_KEY, "someone-else@example.com", existing);
+  assert.equal(r.level, "refreshed");
+  assert.deepEqual(saved.webSession, existing);
+});
+
+test("browser login: account lookup failure -> not saved, still refreshed", async (t) => {
+  const { r, saved } = await browserLoginWith(t, TEST_SESSION_KEY, new Error("network down"));
+  assert.equal(r.level, "refreshed");
+  assert.equal(saved.webSession, undefined);
+});
+
+test("browser login: no sessionKey from the agent -> record has no webSession", async (t) => {
+  const { r, saved } = await browserLoginWith(t, undefined, "beta@example.com");
+  assert.equal(r.level, "refreshed");
+  assert.equal("webSession" in saved, false);
+});

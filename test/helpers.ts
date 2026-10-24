@@ -10,6 +10,8 @@ export interface ScriptedOpts {
   /** reject any send whose method matches */
   throwOn?: Record<string, Error>;
   onSend?: (method: string, params: Record<string, unknown>) => void;
+  /** answer to Network.getCookies (default: no cookies). Use throwOn to make it fail. */
+  cookies?: Array<{ name: string; value: string; domain?: string }>;
 }
 
 export class ScriptedConn implements CdpSender {
@@ -34,6 +36,7 @@ export class ScriptedConn implements CdpSender {
       if (next instanceof Error) return Promise.reject(next);
       return Promise.resolve({ result: { value: next } } as T);
     }
+    if (method === "Network.getCookies") return Promise.resolve({ cookies: this.opts.cookies ?? [] } as T);
     return Promise.resolve({} as T);
   }
 

@@ -2,11 +2,11 @@
  * Health ladder orchestration (SPEC §5): L0 fresh → L1 refresh → L2 web-session
  * → L3 browser agent → L4 manual. Composes the vault/swap, oauth and cdp modules.
  */
-import type { AccountRecord, ActiveState, HealthResult, Vault } from "./types.js";
+import type { AccountRecord, ActiveState, HealthResult, Vault, WebSession } from "./types.js";
 import { refreshWithCas, type TokenRefresher } from "./oauth/health.js";
 import { AUTHORIZE_URL, CLIENT_ID, LOGIN_SCOPES, OAuthClient } from "./oauth/client.js";
 import type { FetchImpl } from "./oauth/client.js";
-import { StaleSessionError, websessionLogin } from "./oauth/websession.js";
+import { StaleSessionError, sessionKeyEmail, websessionLogin } from "./oauth/websession.js";
 import { startCallbackListener } from "./oauth/callback.js";
 import { challenge, generateVerifier, randomState } from "./oauth/pkce.js";
 import { runLoginAgent } from "./cdp/agent.js";
@@ -256,7 +256,27 @@ async function browserLogin(
     return { level: "needs-manual-login", detail: "OAuth state mismatch on callback" };
   }
   const oauth = await client.exchangeCode({ code, redirectUri, codeVerifier: verifier, state });
-  const updated: AccountRecord = { ...rec, credential: { claudeAiOauth: oauth }, lastRefreshedAt: Date.now() };
+  let webSession: WebSession | undefined;
+  if (result.sessionKey) {
+    // Never save a cookie that belongs to another account. Reasons below never include the value.
+    try {
+      const owner = await sessionKeyEmail(result.sessionKey, opts.fetchImpl);
+      if (owner.toLowerCase() === rec.oauthAccount.emailAddress.toLowerCase()) {
+        webSession = { sessionKey: result.sessionKey, savedAt: Date.now() };
+        log.step("saved claude.ai web session from the browser login");
+      } else {
+        log.warn("browser session cookie belongs to a different account — not saved");
+      }
+    } catch (err) {
+      log.warn(`could not verify the browser session cookie — not saved: ${describeError(err)}`);
+    }
+  }
+  const updated: AccountRecord = {
+    ...rec,
+    credential: { claudeAiOauth: oauth },
+    lastRefreshedAt: Date.now(),
+    ...(webSession ? { webSession } : {}),
+  };
   await vault.save(updated);
   if (await isActiveAccount(vault, accountName)) {
     await installFreshCredential(active, updated, opts.env ? { env: opts.env } : {});

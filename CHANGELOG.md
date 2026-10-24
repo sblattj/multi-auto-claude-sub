@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.12 — 2026-10-23
+
+- A successful browser login now saves the claude.ai session cookie
+  automatically (after checking it belongs to the account's email), so the next
+  re-login can use the headless web-session path. `macsub add --session-key`
+  still works.
+
 ## 0.1.11 — 2026-10-14
 
 - Releases now publish to npm from GitHub Actions over npm trusted publishing

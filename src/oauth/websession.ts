@@ -53,6 +53,24 @@ function extractOrgAndEmail(json: unknown): { orgUuid: string; email: string } {
   return { orgUuid, email };
 }
 
+async function lookupAccount(sessionKey: string, fetchImpl?: FetchImpl): Promise<{ orgUuid: string; email: string }> {
+  const fetch: FetchImpl = fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
+  const accountRes = await fetch(ACCOUNT_URL, {
+    method: "GET",
+    headers: { accept: "application/json", cookie: `sessionKey=${sessionKey}`, "user-agent": USER_AGENT },
+  });
+  const accountBody = await accountRes.text();
+  if (!accountRes.ok) {
+    throw toOauthError(accountRes.status, accountBody, "account lookup failed");
+  }
+  return extractOrgAndEmail(safeJson(accountBody));
+}
+
+/** The email address a claude.ai sessionKey belongs to (GET /api/account). Throws on any failure. */
+export async function sessionKeyEmail(sessionKey: string, fetchImpl?: FetchImpl): Promise<string> {
+  return (await lookupAccount(sessionKey, fetchImpl)).email;
+}
+
 /**
  * L2 headless login (SPEC §5): sessionKey cookie → org uuid + email check →
  * PKCE authorize on claude.ai → code exchange on platform.claude.com.
@@ -67,15 +85,7 @@ export async function websessionLogin(
   const fetch: FetchImpl = fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
   const cookie = `sessionKey=${sessionKey}`;
 
-  const accountRes = await fetch(ACCOUNT_URL, {
-    method: "GET",
-    headers: { accept: "application/json", cookie, "user-agent": USER_AGENT },
-  });
-  const accountBody = await accountRes.text();
-  if (!accountRes.ok) {
-    throw toOauthError(accountRes.status, accountBody, "account lookup failed");
-  }
-  const { orgUuid, email } = extractOrgAndEmail(safeJson(accountBody));
+  const { orgUuid, email } = await lookupAccount(sessionKey, fetchImpl);
   if (email.toLowerCase() !== expectedEmail.toLowerCase()) {
     throw new EmailMismatchError(expectedEmail, email);
   }
