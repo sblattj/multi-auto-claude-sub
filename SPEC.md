@@ -109,7 +109,7 @@ Per account, in order, stop at first success:
 ## 6. Browser auto-login agent (L3) — CDP
 
 Attach-only (never launches Chrome). Base URL: `$CDP_BASE` if set, else probe
-`http://127.0.0.1:{9222,9223,9333,9224}` via `GET /json/version` — never assume
+`http://127.0.0.1:{9222,9223,9224}` via `GET /json/version` — never assume
 9222 silently; report which port. All Chrome-only.
 
 1. Bind localhost callback listener on `127.0.0.1:<ephemeral>` FIRST; authorize URL
